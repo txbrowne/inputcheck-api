@@ -1,94 +1,163 @@
 // api/inputcheck-run.js
+// Input Check v1 – live engine calling OpenAI and returning the fixed JSON contract.
 
-// CORS helper (lets browsers talk to us)
 function setCorsHeaders(res) {
-  // For now, allow all origins; later you can lock this to your Squarespace domain.
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-// Vercel serverless function entry point
-export default async function handler(req, res) {
-  setCorsHeaders(res);
-
-  // Handle preflight (browser checks)
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-
-  // Only POST is allowed
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
-  // --- Read raw_input from body ---
-  let rawInput = "";
-  try {
-    if (typeof req.body === "string") {
-      const parsed = JSON.parse(req.body);
-      rawInput = (parsed.raw_input || "").toString();
-    } else {
-      rawInput = (req.body.raw_input || "").toString();
-    }
-  } catch (err) {
-    return res.status(400).json({ error: "Invalid JSON body" });
-  }
-
-  const trimmed = rawInput.trim();
-
-  // --- Dummy "analysis" logic ---
-  const flags = [];
-  if (!trimmed) {
-    flags.push("empty");
-  } else if (trimmed.length < 20) {
-    flags.push("too_short");
-  }
-
-  const isClear = flags.length === 0;
-  const cleanedQuestion = trimmed || "Can you clarify what you want help with?";
-  const score = isClear ? 8 : 5;
-  const gradeLabel = isClear ? "Good, mostly clear" : "Needs a bit more detail";
-
-  const miniAnswer = isClear
-    ? "Here’s a first-pass answer based on your question. This is a dummy response from the v1 engine; soon it will be powered by the full AnswerVault Engine."
-    : "Your question is almost there. Add a bit more context or specifics, and Input Check will be able to generate a sharper answer.";
-
-  const nextBestQuestion = isClear
-    ? "What extra context or constraints would make this answer more actionable for you?"
-    : "Can you add one sentence about your goal, timeframe, or constraints so the answer can be more precise?";
-
-  const slugBase =
-    cleanedQuestion
-      .toLowerCase()
-      .replace(/[^a-z0-9\s-]/g, "")
-      .trim()
-      .replace(/\s+/g, "-") || "input-check-question";
-
-  // --- EngineResponse payload matching your v1 contract ---
-  const responsePayload = {
+// Small helper to build a safe fallback payload if OpenAI fails
+function buildFallback(rawInput, reason) {
+  return {
     inputcheck: {
-      cleaned_question: cleanedQuestion,
-      flags,                       // e.g., ["too_short"]
-      score_10: score,             // number 0–10
-      grade_label: gradeLabel,     // e.g., "Good, mostly clear"
-      clarification_required: !isClear,
-      next_best_question: nextBestQuestion
+      cleaned_question: rawInput || "",
+      flags: ["backend_error"],
+      score_10: 0,
+      grade_label: "Engine unavailable",
+      clarification_required: false,
+      next_best_question:
+        "Try your question again in a moment — the engine had a connection issue."
     },
-    mini_answer: miniAnswer,
+    mini_answer:
+      "Input Check couldn’t reach the engine right now (" + reason + "). Please try again shortly.",
     vault_node: {
-      slug: slugBase,
+      slug: "inputcheck-backend-error",
       vertical_guess: "general",
       cmn_status: "draft",
       public_url: null
     },
     share_blocks: {
-      answer_only: miniAnswer,
+      answer_only:
+        "Input Check couldn’t reach the engine right now (" +
+        reason +
+        "). Please try again shortly.",
       answer_with_link:
-        miniAnswer +
-        "\n\nRe-run this question in Input Check: https://theanswervault.com/"
+        "Input Check couldn’t reach the engine right now (" +
+        reason +
+        "). Please try again shortly.\n\nRun this again at https://theanswervault.com/"
     }
   };
+}
 
-  return res.status(200).json(responsePayload);
+export default async function handler(req, res) {
+  setCorsHeaders(res);
+
+  // Handle browser preflight
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    const fallback = buildFallback(
+      "",
+      "missing OPENAI_API_KEY on server"
+    );
+    res.status(200).json(fallback);
+    return;
+  }
+
+  const body = req.body || {};
+  const raw_input = (body.raw_input || "").toString().trim();
+
+  if (!raw_input) {
+    res.status(400).json({ error: "raw_input is required" });
+    return;
+  }
+
+  // ----- OpenAI call -----
+  try {
+    const systemPrompt = `
+You are **Input Check v1**, a question-cleaning and mini-answer engine for theanswervault.com.
+
+Given a raw user question, you must return a SINGLE JSON object with this exact shape:
+
+{
+  "inputcheck": {
+    "cleaned_question": "string",
+    "flags": ["too_short", "vague_scope", "multi_question", "missing_context", "unsafe_or_offlimits"],
+    "score_10": 0,
+    "grade_label": "string",
+    "clarification_required": false,
+    "next_best_question": "string"
+  },
+  "mini_answer": "string",
+  "vault_node": {
+    "slug": "string",
+    "vertical_guess": "string",
+    "cmn_status": "draft",
+    "public_url": null
+  },
+  "share_blocks": {
+    "answer_only": "string",
+    "answer_with_link": "string"
+  }
+}
+
+Guidelines:
+- "cleaned_question": rewrite the question as one clear, specific, single question.
+- "flags": use zero or more of the allowed flags only.
+- "score_10": 1–10, higher = clearer / more answerable.
+- "grade_label": short human label, e.g. "Great, very clear" or "Too short, missing context".
+- "clarification_required": true only if you really can’t answer without more info.
+- "next_best_question": a logical follow-up question that deepens or sharpens the original intent.
+- "mini_answer": a concise, helpful answer directly addressing the cleaned_question.
+- "vault_node.slug": lower-case, dash-separated slug capturing the intent.
+- "vault_node.vertical_guess": short label for topic (e.g. "auto · jeep_leaks", "business", "health_general").
+- "share_blocks.answer_only": a share-ready text block with just the cleaned question + mini answer.
+- "share_blocks.answer_with_link": same as above but ending with "Run this through Input Check at https://theanswervault.com/".
+Return ONLY the JSON, no extra text.
+    `.trim();
+
+    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + apiKey
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: JSON.stringify({ raw_input })
+          }
+        ]
+      })
+    });
+
+    if (!openaiRes.ok) {
+      const text = await openaiRes.text();
+      console.error("OpenAI error:", openaiRes.status, text);
+      const fallback = buildFallback(raw_input, "OpenAI HTTP " + openaiRes.status);
+      res.status(200).json(fallback);
+      return;
+    }
+
+    const completion = await openaiRes.json();
+    const content = completion.choices?.[0]?.message?.content || "{}";
+
+    let payload;
+    try {
+      payload = JSON.parse(content);
+    } catch (err) {
+      console.error("JSON parse error from OpenAI:", err, content);
+      payload = buildFallback(raw_input, "invalid JSON from model");
+    }
+
+    res.status(200).json(payload);
+  } catch (err) {
+    console.error("Unexpected InputCheck error:", err);
+    const fallback = buildFallback(raw_input, "unexpected server error");
+    res.status(200).json(fallback);
+  }
 }
