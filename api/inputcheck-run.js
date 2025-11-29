@@ -20,7 +20,9 @@ function buildFallback(rawInput, reason) {
         "Try your question again in a moment — the engine had a connection issue."
     },
     mini_answer:
-      "Input Check couldn’t reach the engine right now (" + reason + "). Please try again shortly.",
+      "Input Check couldn’t reach the engine right now (" +
+      reason +
+      "). Please try again shortly.",
     vault_node: {
       slug: "inputcheck-backend-error",
       vertical_guess: "general",
@@ -56,10 +58,7 @@ export default async function handler(req, res) {
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    const fallback = buildFallback(
-      "",
-      "missing OPENAI_API_KEY on server"
-    );
+    const fallback = buildFallback("", "missing OPENAI_API_KEY on server");
     res.status(200).json(fallback);
     return;
   }
@@ -74,7 +73,7 @@ export default async function handler(req, res) {
 
   // ----- OpenAI call -----
   try {
- const systemPrompt = `
+    const systemPrompt = `
 You are "Input Check v1", the question-cleaning and mini-answer engine for theanswervault.com.
 
 Your job is to take a messy, real-world user question and:
@@ -148,5 +147,50 @@ FIELD RULES
 IMPORTANT:
 - Return ONLY the JSON object described above.
 - Do NOT include any extra text, commentary, or Markdown outside the JSON.
-`.trim();
+    `.trim();
+
+    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + apiKey
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: JSON.stringify({ raw_input })
+          }
+        ]
+      })
+    });
+
+    if (!openaiRes.ok) {
+      const text = await openaiRes.text();
+      console.error("OpenAI error:", openaiRes.status, text);
+      const fallback = buildFallback(raw_input, "OpenAI HTTP " + openaiRes.status);
+      res.status(200).json(fallback);
+      return;
+    }
+
+    const completion = await openaiRes.json();
+    const content = completion.choices?.[0]?.message?.content || "{}";
+
+    let payload;
+    try {
+      payload = JSON.parse(content);
+    } catch (err) {
+      console.error("JSON parse error from OpenAI:", err, content);
+      payload = buildFallback(raw_input, "invalid JSON from model");
+    }
+
+    res.status(200).json(payload);
+  } catch (err) {
+    console.error("Unexpected InputCheck error:", err);
+    const fallback = buildFallback(raw_input, "unexpected server error");
+    res.status(200).json(fallback);
+  }
 }
