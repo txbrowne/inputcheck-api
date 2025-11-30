@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// Input Check v1.1 – live engine calling OpenAI and returning the fixed JSON contract.
+// Input Check v1.2 – live engine calling OpenAI and returning the fixed JSON contract.
 
 "use strict";
 
@@ -20,7 +20,7 @@ const REQUEST_TIMEOUT_MS = parseInt(
   process.env.INPUTCHECK_TIMEOUT_MS || "20000",
   10
 );
-const ENGINE_VERSION = "inputcheck-v1.1.0";
+const ENGINE_VERSION = "inputcheck-v1.2.0";
 
 function setCorsHeaders(res) {
   // If you ever want to lock this down, replace "*" with your domain.
@@ -62,6 +62,22 @@ function buildFallback(rawInput, reason) {
         "Input Check couldn’t reach the engine right now (" +
         reason +
         "). Please try again shortly.\n\nRun this again at https://theanswervault.com/"
+    },
+    decision_frame: {
+      question_type: "unknown",
+      pros: [],
+      cons: [],
+      personal_checks: []
+    },
+    intent_map: {
+      primary_intent: safeInput || "",
+      sub_intents: []
+    },
+    action_protocol: {
+      type: "none",
+      steps: [],
+      estimated_effort: "",
+      recommended_tools: []
     }
   };
 }
@@ -74,6 +90,101 @@ function makeRequestId() {
     "_" +
     Math.random().toString(36).slice(2, 8)
   );
+}
+
+// Ensure new blocks are always present and minimally sane
+function normalizePayload(payload, fallbackBaseQuestion) {
+  if (!payload || typeof payload !== "object") {
+    return buildFallback(fallbackBaseQuestion || "", "invalid payload shape");
+  }
+
+  // Ensure inputcheck + engine_version
+  if (!payload.inputcheck || typeof payload.inputcheck !== "object") {
+    payload.inputcheck = {
+      cleaned_question: fallbackBaseQuestion || "",
+      flags: ["backend_error"],
+      score_10: 0,
+      grade_label: "Engine unavailable",
+      clarification_required: false,
+      next_best_question:
+        "Try your question again in a moment — the engine returned an incomplete result.",
+      engine_version: ENGINE_VERSION
+    };
+  } else {
+    payload.inputcheck.engine_version =
+      payload.inputcheck.engine_version || ENGINE_VERSION;
+  }
+
+  // decision_frame
+  if (!payload.decision_frame || typeof payload.decision_frame !== "object") {
+    payload.decision_frame = {
+      question_type: "unknown",
+      pros: [],
+      cons: [],
+      personal_checks: []
+    };
+  } else {
+    payload.decision_frame.question_type =
+      payload.decision_frame.question_type || "unknown";
+    payload.decision_frame.pros = Array.isArray(payload.decision_frame.pros)
+      ? payload.decision_frame.pros
+      : [];
+    payload.decision_frame.cons = Array.isArray(payload.decision_frame.cons)
+      ? payload.decision_frame.cons
+      : [];
+    payload.decision_frame.personal_checks = Array.isArray(
+      payload.decision_frame.personal_checks
+    )
+      ? payload.decision_frame.personal_checks
+      : [];
+  }
+
+  // intent_map
+  if (!payload.intent_map || typeof payload.intent_map !== "object") {
+    payload.intent_map = {
+      primary_intent:
+        (payload.inputcheck && payload.inputcheck.cleaned_question) ||
+        fallbackBaseQuestion ||
+        "",
+      sub_intents: []
+    };
+  } else {
+    payload.intent_map.primary_intent =
+      payload.intent_map.primary_intent ||
+      (payload.inputcheck && payload.inputcheck.cleaned_question) ||
+      fallbackBaseQuestion ||
+      "";
+    payload.intent_map.sub_intents = Array.isArray(
+      payload.intent_map.sub_intents
+    )
+      ? payload.intent_map.sub_intents
+      : [];
+  }
+
+  // action_protocol
+  if (!payload.action_protocol || typeof payload.action_protocol !== "object") {
+    payload.action_protocol = {
+      type: "none",
+      steps: [],
+      estimated_effort: "",
+      recommended_tools: []
+    };
+  } else {
+    payload.action_protocol.type =
+      payload.action_protocol.type || "none";
+    payload.action_protocol.steps = Array.isArray(payload.action_protocol.steps)
+      ? payload.action_protocol.steps
+      : [];
+    payload.action_protocol.estimated_effort =
+      payload.action_protocol.estimated_effort || "";
+    payload.action_protocol.recommended_tools = Array.isArray(
+      payload.action_protocol.recommended_tools
+    )
+      ? payload.action_protocol.recommended_tools
+      : [];
+  }
+
+  return payload;
 }
 
 export default async function handler(req, res) {
@@ -137,6 +248,10 @@ Your job is to take a messy, real-world user question and:
 3) Suggest ONE "next_best_question" that naturally follows and could be answered as its own Q&A node.
 4) Detect any "input viruses" in the question (vague scope, stacked asks, missing context, safety risk, off-topic) and encode them as flags.
 5) Provide a simple guess at the vertical/topic and intent for vault routing.
+6) Build three extra structured layers:
+   - "decision_frame" (pros, cons, personal readiness checks),
+   - "intent_map" (primary + sub-intents),
+   - "action_protocol" (a short, ordered next-steps routine).
 
 You must return a SINGLE JSON object with EXACTLY this shape:
 
@@ -160,6 +275,42 @@ You must return a SINGLE JSON object with EXACTLY this shape:
   "share_blocks": {
     "answer_only": "string",
     "answer_with_link": "string"
+  },
+  "decision_frame": {
+    "question_type": "string",
+    "pros": [
+      {
+        "label": "string",
+        "reason": "string",
+        "tags": ["string"],
+        "spawn_question_slug": "string"
+      }
+    ],
+    "cons": [
+      {
+        "label": "string",
+        "reason": "string",
+        "tags": ["string"],
+        "spawn_question_slug": "string"
+      }
+    ],
+    "personal_checks": [
+      {
+        "label": "string",
+        "prompt": "string",
+        "dimension": "string"
+      }
+    ]
+  },
+  "intent_map": {
+    "primary_intent": "string",
+    "sub_intents": ["string"]
+  },
+  "action_protocol": {
+    "type": "string",
+    "steps": ["string"],
+    "estimated_effort": "string",
+    "recommended_tools": ["string"]
   }
 }
 
@@ -240,6 +391,47 @@ FIELD RULES
 
 - "inputcheck.engine_version":
   - Always set to "${ENGINE_VERSION}".
+
+DECISION FRAME RULES
+
+- "decision_frame.question_type":
+  - Short label for the question pattern, e.g. "timing_decision", "risk_tradeoff", "method_choice", "diagnostic", "routine_design".
+
+- "decision_frame.pros" and "decision_frame.cons":
+  - Each item should describe one clear advantage or drawback.
+  - "label": 1 short clause suitable as a bullet heading.
+  - "reason": 1–2 sentences explaining why it matters.
+  - "tags": small set of tags such as "cost", "risk", "convenience", "health", "market_conditions".
+  - "spawn_question_slug": dash-case slug for a future AnswerVault question that would expand this bullet.
+
+- "decision_frame.personal_checks":
+  - Each item is a self-check the user should consider.
+  - "label": ultra-short name (e.g. "Payment comfort").
+  - "prompt": full question (e.g. "Can you comfortably afford the projected mortgage payment plus taxes and insurance?").
+  - "dimension": axis label such as "affordability", "risk_tolerance", "time_horizon", "health_status".
+
+INTENT MAP RULES
+
+- "intent_map.primary_intent":
+  - Short phrase or question summarizing the same main intent as cleaned_question.
+
+- "intent_map.sub_intents":
+  - 1–5 additional, standalone questions implied by the extra "noise" in the raw_input.
+  - Each must be written so it could be answered as its own Q&A node (no vague "this/that" references).
+
+ACTION PROTOCOL RULES
+
+- "action_protocol.type":
+  - One of: "decision", "diagnostic", "routine", "planning", "safety" (pick the closest).
+
+- "action_protocol.steps":
+  - 3–6 ordered, concrete steps starting with verbs (e.g. "Calculate…", "Check…", "Schedule…").
+
+- "action_protocol.estimated_effort":
+  - Rough human-readable time like "10–15 minutes", "30–45 minutes", "half a day".
+
+- "action_protocol.recommended_tools":
+  - Slugs for tools or resources that could help, e.g. "mortgage_calculator", "doctor_consult", "jeep_cabin_pressure_test".
 
 EXAMPLE FOR MULTI-ISSUE JEEP QUESTION
 
@@ -341,13 +533,8 @@ IMPORTANT:
       );
     }
 
-    // Ensure engine_version is always present
-    if (payload && payload.inputcheck) {
-      payload.inputcheck.engine_version =
-        payload.inputcheck.engine_version || ENGINE_VERSION;
-    }
-
-    res.status(200).json(payload);
+    const normalized = normalizePayload(payload, truncated);
+    res.status(200).json(normalized);
   } catch (err) {
     const reason =
       err && err.name === "AbortError"
