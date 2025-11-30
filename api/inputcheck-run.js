@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// Input Check v1.1 – live engine calling OpenAI and returning the fixed JSON contract.
+// Input Check v1 – live engine calling OpenAI and returning the fixed JSON contract.
 
 "use strict";
 
@@ -20,8 +20,6 @@ const REQUEST_TIMEOUT_MS = parseInt(
   process.env.INPUTCHECK_TIMEOUT_MS || "20000",
   10
 );
-
-// Version tag surfaced back in the payload
 const ENGINE_VERSION = "inputcheck-v1.1.0";
 
 function setCorsHeaders(res) {
@@ -203,26 +201,29 @@ FIELD RULES
   - 2–5 sentences.
   - Directly answers the cleaned_question.
   - Be concrete and mechanism-focused when possible (explain the real cause/fix, not vague filler).
-  - Avoid hallucinating specific numbers, dates, or guarantees; use qualitative language if uncertain.
 
-  - For YES/NO-style questions:
-    - If the cleaned_question is essentially a yes/no question (e.g. "Will X happen?", "Can Y replace Z?", "Is A allowed?"),
-      START the mini_answer with a direct clause such as "Yes, ..." or "No, ..." and immediately follow it with a clear explanation.
-    - After the first sentence, you may add nuance and conditions (e.g. "…in some sectors", "…but it depends on industry and regulation").
+- SPECIAL CASES FOR MINI ANSWER STYLE:
 
-  - For COMPARISON or "better" questions:
-    - If the user is asking whether one option is better than another (e.g. "Is SMP better than a hair transplant?", "X vs Y which is better?"),
-      begin by stating that neither option is universally better and that the choice depends on goals, budget, risk tolerance, or context.
-    - In the following sentences, briefly summarize EACH option (one sentence per option): mechanism, permanence, cost, recovery/maintenance.
-    - Include one short clause explaining who each option is best suited for (e.g. "A fits people who want real growing hair; B fits those who prefer a non-surgical, lower-cost option.").
+  1) Yes/No questions:
+     - If the cleaned_question is a direct Yes/No question (for example starts with "Will", "Can", "Is", "Are", "Does", "Do" and asks whether something is or will be true), start the mini_answer with a short, direct clause like:
+       - "Yes, ..." or "No, ...", followed by a brief qualifier.
+     - Then add 1–3 sentences of nuance (conditions, tradeoffs, or exposed vs safer cases).
+     - Example: "Will AI take jobs in the future?" → "Yes, AI will replace some jobs by automating repetitive tasks, but it will also create new roles and transform many existing jobs rather than eliminating all work."
 
-  - For topics involving ONGOING MAINTENANCE or LIFECYCLE:
-    - When relevant (e.g. SMP fading, window film durability, subscription renewals),
-      mention maintenance or touch-up cycles in a short phrase (e.g. "typically needs touch-ups every 3–5 years.").
+  2) "Better than" comparison questions:
+     - If the cleaned_question asks whether X is "better" than Y (e.g. "Is SMP better than a hair transplant?"):
+       - Usually start with a neutral comparison such as:
+         - "Neither X nor Y is universally better; the best option depends on your goals, budget, and situation."
+       - Then give 1 sentence for X and 1 sentence for Y, explaining mechanism, permanence, cost/recovery, and maintenance.
+       - End with a short "best for who" clause (e.g. "X suits people who..., while Y is better for people who...").
+     - Only clearly favor one option if there is a strong domain reason to do so.
 
-  - For MACRO DISRUPTION questions (e.g. "Will AI take jobs?", "Will X replace Y industry?"):
-    - After the opener, add one clause identifying which roles/sectors are more exposed and which are relatively safer,
-      without being alarmist or overly specific.
+  3) "Is this normal / is this a [brand] thing?" reassurance:
+     - If the raw_input or cleaned_question explicitly asks "is this normal", "is this just a Jeep thing", "am I crazy", or similar:
+       - You may start the mini_answer with a brief normative statement before explaining the cause/fix, such as:
+         - "No, it’s not normal for X; instead, it usually means Y..."
+         - "Yes, this is common for X, but here’s how to handle it safely..."
+       - Then continue with mechanism and practical steps, keeping the total mini_answer within 2–5 sentences.
 
 - "vault_node.slug":
   - Lower-case, dash-separated slug capturing the SAME single primary intent as cleaned_question (e.g. "jeep-jl-front-passenger-floor-leak-fix").
@@ -243,7 +244,7 @@ FIELD RULES
 EXAMPLE FOR MULTI-ISSUE JEEP QUESTION
 
 Raw input (summary):
-"front passenger floor gets soaked, sometimes drips from freedom panel, crazy wind noise after dealer adjustment, they want $2500, is this a Jeep thing?"
+"front passenger floor gets soaked, sometimes drips from freedom panel, crazy wind noise after dealer adjustment, they want $2500, is this a Jeep thing or what’s the real fix?"
 
 CORRECT cleaned_question (choose ONE primary problem):
 "How can I fix recurring front passenger floor water leaks on my 2020 Jeep Wrangler JL without paying dealer reseal prices or using silicone?"
