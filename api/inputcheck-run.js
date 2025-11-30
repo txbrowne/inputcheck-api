@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// Input Check v1.3 – live engine calling OpenAI and returning the fixed JSON contract.
+// Input Check v1.4 – live engine calling OpenAI and returning the fixed JSON contract.
 
 "use strict";
 
@@ -20,7 +20,7 @@ const REQUEST_TIMEOUT_MS = parseInt(
   process.env.INPUTCHECK_TIMEOUT_MS || "20000",
   10
 );
-const ENGINE_VERSION = "inputcheck-v1.3.0";
+const ENGINE_VERSION = "inputcheck-v1.4.0";
 
 // ----------------------------
 // Helpers
@@ -84,7 +84,10 @@ function buildFallback(rawInput, reason) {
       steps: [],
       estimated_effort: "",
       recommended_tools: []
-    }
+    },
+    // New v1.4 fields
+    answer_capsule_25w: "",
+    owned_insight: ""
   };
 }
 
@@ -190,9 +193,9 @@ function normalizePayload(payload, fallbackBaseQuestion) {
         "\n\nRun this through Input Check at https://theanswervault.com/"
     };
   } else {
-    const cq = payload.inputcheck.cleaned_question;
+    const cqText = payload.inputcheck.cleaned_question;
     const ma = payload.mini_answer;
-    const defaultBase = cq + "\n\n" + ma;
+    const defaultBase = cqText + "\n\n" + ma;
 
     payload.share_blocks.answer_only =
       payload.share_blocks.answer_only || defaultBase;
@@ -272,6 +275,28 @@ function normalizePayload(payload, fallbackBaseQuestion) {
       : [];
   }
 
+  // ---------- answer_capsule_25w ----------
+  if (typeof payload.answer_capsule_25w !== "string") {
+    // Simple default: first ~25 words of mini_answer, or cleaned_question
+    const source =
+      typeof payload.mini_answer === "string" &&
+      payload.mini_answer.trim().length > 0
+        ? payload.mini_answer.trim()
+        : payload.inputcheck.cleaned_question || baseQuestion;
+
+    const words = source.split(/\s+/).slice(0, 25);
+    payload.answer_capsule_25w = words.join(" ");
+  } else {
+    payload.answer_capsule_25w = payload.answer_capsule_25w.toString().trim();
+  }
+
+  // ---------- owned_insight ----------
+  if (typeof payload.owned_insight !== "string") {
+    payload.owned_insight = "";
+  } else {
+    payload.owned_insight = payload.owned_insight.toString().trim();
+  }
+
   return payload;
 }
 
@@ -329,7 +354,7 @@ export default async function handler(req, res) {
 
   try {
     const systemPrompt = `
-You are "Input Check v1.3", the question-cleaning and mini-answer engine for theanswervault.com.
+You are "Input Check v1.4", the question-cleaning and mini-answer engine for theanswervault.com.
 
 Your job is to take a messy, real-world user question and:
 
@@ -343,6 +368,7 @@ Your job is to take a messy, real-world user question and:
    - "decision_frame" (pros, cons, personal readiness checks),
    - "intent_map" (primary + sub-intents),
    - "action_protocol" (a short, ordered next-steps routine).
+8) Create a 25-word "answer_capsule_25w" and an optional "owned_insight" line for deeper, branded context.
 
 You must return a SINGLE JSON object with EXACTLY this shape:
 
@@ -403,7 +429,9 @@ You must return a SINGLE JSON object with EXACTLY this shape:
     "steps": ["string"],
     "estimated_effort": "string",
     "recommended_tools": ["string"]
-  }
+  },
+  "answer_capsule_25w": "string",
+  "owned_insight": "string"
 }
 
 CANONICAL_QUERY RULES
@@ -420,7 +448,24 @@ CANONICAL_QUERY RULES
   - Full sentences with extra commentary.
   - Including "according to inputcheck" or references to the engine.
 
-Other rules (cleaned_question, flags, mini_answer, decision_frame, intent_map, action_protocol, vault_node, share_blocks) follow the same logic as previously described: single primary intent, 2–5 sentence AI-Overview-style mini_answer, etc.
+ANSWER CAPSULE (answer_capsule_25w)
+
+- 1 sentence, roughly 20–25 words (about 120–150 characters).
+- Must be LINK-FREE (no URLs, no "click here", no explicit brand plugs unless essential to the fact).
+- Directly summarize the same primary intent as cleaned_question in neutral, factual tone.
+- Written so it can be quoted alone as an AI Overview / featured snippet sentence.
+
+OWNED INSIGHT (owned_insight)
+
+- Optional short sentence with an original, branded, or framework-style insight that goes beyond generic web answers.
+- If no meaningful owned insight exists, return an empty string "".
+- Do NOT repeat the capsule; add something deeper (e.g. a data point, a rule-of-thumb, or a diagnostic heuristic).
+
+Other rules (cleaned_question, flags, mini_answer, decision_frame, intent_map, action_protocol, vault_node, share_blocks) follow the same logic as before:
+- single primary intent in cleaned_question,
+- flags only from the allowed list,
+- mini_answer 2–5 sentences in AI-Overview style,
+- decision_frame / intent_map / action_protocol populated consistently and concisely.
 
 IMPORTANT:
 - Return ONLY the JSON object described above.
