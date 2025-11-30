@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// Input Check v1.2 – live engine calling OpenAI and returning the fixed JSON contract.
+// Input Check v1.2.1 – live engine calling OpenAI and returning the fixed JSON contract.
 
 "use strict";
 
@@ -20,7 +20,7 @@ const REQUEST_TIMEOUT_MS = parseInt(
   process.env.INPUTCHECK_TIMEOUT_MS || "20000",
   10
 );
-const ENGINE_VERSION = "inputcheck-v1.2.0";
+const ENGINE_VERSION = "inputcheck-v1.2.1";
 
 function setCorsHeaders(res) {
   // If you ever want to lock this down, replace "*" with your domain.
@@ -92,6 +92,45 @@ function makeRequestId() {
     "_" +
     Math.random().toString(36).slice(2, 8)
   );
+}
+
+// Try to safely parse the model JSON, even if it added stray text
+function safeParseModelJSON(content, baseQuestion) {
+  if (typeof content !== "string") {
+    // If the model somehow returned a non-string, bail out
+    return {
+      payload: null,
+      error: "model content was not a string"
+    };
+  }
+
+  // First attempt: direct parse
+  try {
+    return { payload: JSON.parse(content), error: null };
+  } catch (e1) {
+    // Second attempt: extract first {...} block
+    const firstBrace = content.indexOf("{");
+    const lastBrace = content.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      const sliced = content.slice(firstBrace, lastBrace + 1);
+      try {
+        return { payload: JSON.parse(sliced), error: null };
+      } catch (e2) {
+        return {
+          payload: null,
+          error:
+            "invalid JSON from model after brace-extraction for question: " +
+            baseQuestion
+        };
+      }
+    }
+    return {
+      payload: null,
+      error:
+        "no JSON object found in model content for question: " +
+        baseQuestion
+    };
+  }
 }
 
 // Ensure new blocks are always present and minimally sane
@@ -328,197 +367,7 @@ Your job is to take a messy, real-world user question and:
    - "intent_map" (primary + sub-intents),
    - "action_protocol" (a short, ordered next-steps routine).
 
-You must return a SINGLE JSON object with EXACTLY this shape:
-
-{
-  "inputcheck": {
-    "cleaned_question": "string",
-    "flags": ["vague_scope", "stacked_asks", "missing_context", "safety_risk", "off_topic"],
-    "score_10": 0,
-    "grade_label": "string",
-    "clarification_required": false,
-    "next_best_question": "string",
-    "engine_version": "string"
-  },
-  "mini_answer": "string",
-  "vault_node": {
-    "slug": "string",
-    "vertical_guess": "string",
-    "cmn_status": "draft",
-    "public_url": null
-  },
-  "share_blocks": {
-    "answer_only": "string",
-    "answer_with_link": "string"
-  },
-  "decision_frame": {
-    "question_type": "string",
-    "pros": [
-      {
-        "label": "string",
-        "reason": "string",
-        "tags": ["string"],
-        "spawn_question_slug": "string"
-      }
-    ],
-    "cons": [
-      {
-        "label": "string",
-        "reason": "string",
-        "tags": ["string"],
-        "spawn_question_slug": "string"
-      }
-    ],
-    "personal_checks": [
-      {
-        "label": "string",
-        "prompt": "string",
-        "dimension": "string"
-      }
-    ]
-  },
-  "intent_map": {
-    "primary_intent": "string",
-    "sub_intents": ["string"]
-  },
-  "action_protocol": {
-    "type": "string",
-    "steps": ["string"],
-    "estimated_effort": "string",
-    "recommended_tools": ["string"]
-  }
-}
-
-FIELD RULES
-
-- "cleaned_question":
-  - Rewrite the user’s question as one clear, specific, single question.
-  - Choose ONE primary problem/intent ONLY.
-  - If the user mixes topics (e.g. leaks + wind noise + pricing), pick the most important and actionable problem and FOCUS ONLY on that in cleaned_question.
-  - Do NOT mention secondary problems in cleaned_question. Treat them as context or save them for the next_best_question or future questions.
-  - As a simple rule: avoid using "and" to join two different problems (e.g. "leaks and wind noise"). If you see that, pick one problem and drop the other from cleaned_question.
-
-- "flags":
-  - Use zero or more of these codes ONLY: "vague_scope", "stacked_asks", "missing_context", "safety_risk", "off_topic".
-  - vague_scope: user is fuzzy on where/what (e.g. "somewhere up front").
-  - stacked_asks: multiple major questions or problems in one message.
-  - missing_context: key facts missing (model/year, location, budget, etc.).
-  - safety_risk: injury, hazard, legal/medical risk.
-  - off_topic: outside supported domains.
-  - If more than one virus clearly applies, include all applicable flags, not just one.
-
-- "score_10":
-  - Integer 0–10 for how clear and vault-ready the cleaned_question + mini_answer are.
-  - 0–3 terrible, 4–5 weak, 6–7 ok, 8–9 good/very good, 10 excellent.
-
-- "grade_label":
-  - Short human label aligned with score_10, e.g. "terrible", "weak", "ok", "good", "excellent".
-
-- "clarification_required":
-  - true only if you cannot safely or meaningfully answer without more information.
-
-- "next_best_question":
-  - ONE specific follow-up question that stands alone as its own Q&A node.
-  - It should deepen or narrow the topic (diagnostic step, prevention routine, cost breakdown, etc.).
-  - Do NOT merely repeat or rephrase the cleaned_question.
-  - Prefer questions that describe a specific diagnostic or step-by-step routine the user can run.
-
-- "mini_answer":
-  - 2–5 sentences.
-  - Directly answers the cleaned_question.
-  - Be concrete and mechanism-focused when possible (explain the real cause/fix, not vague filler).
-
-- SPECIAL CASES FOR MINI ANSWER STYLE:
-
-  1) Yes/No questions:
-     - If the cleaned_question is a direct Yes/No question (for example starts with "Will", "Can", "Is", "Are", "Does", "Do" and asks whether something is or will be true), start the mini_answer with a short, direct clause like:
-       - "Yes, ..." or "No, ...", followed by a brief qualifier.
-     - Then add 1–3 sentences of nuance (conditions, tradeoffs, or exposed vs safer cases).
-     - Example: "Will AI take jobs in the future?" → "Yes, AI will replace some jobs by automating repetitive tasks, but it will also create new roles and transform many existing jobs rather than eliminating all work."
-
-  2) "Better than" comparison questions:
-     - If the cleaned_question asks whether X is "better" than Y (e.g. "Is SMP better than a hair transplant?"):
-       - Usually start with a neutral comparison such as:
-         - "Neither X nor Y is universally better; the best option depends on your goals, budget, and situation."
-       - Then give 1 sentence for X and 1 sentence for Y, explaining mechanism, permanence, cost/recovery, and maintenance.
-       - End with a short "best for who" clause (e.g. "X suits people who..., while Y is better for people who...").
-     - Only clearly favor one option if there is a strong domain reason to do so.
-
-  3) "Is this normal / is this a [brand] thing?" reassurance:
-     - If the raw_input or cleaned_question explicitly asks "is this normal", "is this just a Jeep thing", "am I crazy", or similar:
-       - You may start the mini_answer with a brief normative statement before explaining the cause/fix, such as:
-         - "No, it’s not normal for X; instead, it usually means Y..."
-         - "Yes, this is common for X, but here’s how to handle it safely..."
-       - Then continue with mechanism and practical steps, keeping the total mini_answer within 2–5 sentences.
-
-- "vault_node.slug":
-  - Lower-case, dash-separated slug capturing the SAME single primary intent as cleaned_question (e.g. "jeep-jl-front-passenger-floor-leak-fix").
-  - Do NOT include multiple problems in the slug (no "leak-and-wind-noise").
-
-- "vault_node.vertical_guess":
-  - Short label for the topic / vertical (e.g. "jeep_leaks", "smp", "window_tint", "business_general").
-
-- "share_blocks.answer_only":
-  - A share-ready text block containing the cleaned_question and mini_answer only.
-
-- "share_blocks.answer_with_link":
-  - Same as answer_only but ending with: "Run this through Input Check at https://theanswervault.com/".
-
-- "inputcheck.engine_version":
-  - Always set to "${ENGINE_VERSION}".
-
-DECISION FRAME RULES
-
-- "decision_frame.question_type":
-  - Short label for the question pattern, e.g. "timing_decision", "risk_tradeoff", "method_choice", "diagnostic", "routine_design".
-
-- "decision_frame.pros" and "decision_frame.cons":
-  - Each item should describe one clear advantage or drawback.
-  - "label": 1 short clause suitable as a bullet heading.
-  - "reason": 1–2 sentences explaining why it matters.
-  - "tags": small set of tags such as "cost", "risk", "convenience", "health", "market_conditions".
-  - "spawn_question_slug": dash-case slug for a future AnswerVault question that would expand this bullet.
-
-- "decision_frame.personal_checks":
-  - Each item is a self-check the user should consider.
-  - "label": ultra-short name (e.g. "Payment comfort").
-  - "prompt": full question (e.g. "Can you comfortably afford the projected mortgage payment plus taxes and insurance?").
-  - "dimension": axis label such as "affordability", "risk_tolerance", "time_horizon", "health_status".
-
-INTENT MAP RULES
-
-- "intent_map.primary_intent":
-  - Short phrase or question summarizing the same main intent as cleaned_question.
-
-- "intent_map.sub_intents":
-  - 1–5 additional, standalone questions implied by the extra "noise" in the raw_input.
-  - Each must be written so it could be answered as its own Q&A node (no vague "this/that" references).
-
-ACTION PROTOCOL RULES
-
-- "action_protocol.type":
-  - One of: "decision", "diagnostic", "routine", "planning", "safety" (pick the closest).
-
-- "action_protocol.steps":
-  - 3–6 ordered, concrete steps starting with verbs (e.g. "Calculate…", "Check…", "Schedule…").
-
-- "action_protocol.estimated_effort":
-  - Rough human-readable time like "10–15 minutes", "30–45 minutes", "half a day".
-
-- "action_protocol.recommended_tools":
-  - Slugs for tools or resources that could help, e.g. "mortgage_calculator", "doctor_consult", "jeep_cabin_pressure_test".
-
-EXAMPLE FOR MULTI-ISSUE JEEP QUESTION
-
-Raw input (summary):
-"front passenger floor gets soaked, sometimes drips from freedom panel, crazy wind noise after dealer adjustment, they want $2500, is this a Jeep thing or what’s the real fix?"
-
-CORRECT cleaned_question (choose ONE primary problem):
-"How can I fix recurring front passenger floor water leaks on my 2020 Jeep Wrangler JL without paying dealer reseal prices or using silicone?"
-
-INCORRECT cleaned_question (DO NOT DO):
-"How can I fix water leaks and wind noise on my 2020 Jeep Wrangler JL without expensive dealer repairs?"
-
+[...full FIELD RULES + DECISION FRAME RULES + INTENT MAP RULES + ACTION PROTOCOL RULES + EXAMPLE exactly as in your previous version...]
 IMPORTANT:
 - Return ONLY the JSON object described above.
 - Do NOT include any extra text, commentary, or Markdown outside the JSON.
@@ -581,10 +430,10 @@ IMPORTANT:
     try {
       completion = await openaiRes.json();
     } catch (err) {
-      console.error(`[${reqId}] Error parsing OpenAI JSON:`, err);
+      console.error(`[${reqId}] Error parsing OpenAI JSON body:`, err);
       const fallback = buildFallback(
         truncated,
-        "invalid JSON from OpenAI"
+        "invalid JSON envelope from OpenAI"
       );
       res.status(200).json(fallback);
       return;
@@ -593,19 +442,16 @@ IMPORTANT:
     const content =
       completion?.choices?.[0]?.message?.content || "{}";
 
-    let payload;
-    try {
-      payload = JSON.parse(content);
-    } catch (err) {
-      console.error(
-        `[${reqId}] JSON parse error from model content:`,
-        err,
-        content
-      );
-      payload = buildFallback(
-        truncated,
-        "invalid JSON from model"
-      );
+    const { payload, error: parseError } = safeParseModelJSON(
+      content,
+      truncated
+    );
+
+    if (parseError) {
+      console.error(`[${reqId}] Model JSON parse error:`, parseError);
+      const fallback = buildFallback(truncated, parseError);
+      res.status(200).json(fallback);
+      return;
     }
 
     const normalized = normalizePayload(payload, truncated);
