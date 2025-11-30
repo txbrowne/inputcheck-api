@@ -32,9 +32,16 @@ function setCorsHeaders(res) {
 // Small helper to build a safe fallback payload if OpenAI fails
 function buildFallback(rawInput, reason) {
   const safeInput = (rawInput || "").toString();
+
+  const cleaned = safeInput || "";
+  const mini =
+    "Input Check couldn’t reach the engine right now (" +
+    reason +
+    "). Please try again shortly.";
+
   return {
     inputcheck: {
-      cleaned_question: safeInput,
+      cleaned_question: cleaned,
       flags: ["backend_error"],
       score_10: 0,
       grade_label: "Engine unavailable",
@@ -43,10 +50,7 @@ function buildFallback(rawInput, reason) {
         "Try your question again in a moment — the engine had a connection issue.",
       engine_version: ENGINE_VERSION
     },
-    mini_answer:
-      "Input Check couldn’t reach the engine right now (" +
-      reason +
-      "). Please try again shortly.",
+    mini_answer: mini,
     vault_node: {
       slug: "inputcheck-backend-error",
       vertical_guess: "general",
@@ -54,14 +58,12 @@ function buildFallback(rawInput, reason) {
       public_url: null
     },
     share_blocks: {
-      answer_only:
-        "Input Check couldn’t reach the engine right now (" +
-        reason +
-        "). Please try again shortly.",
+      answer_only: cleaned + (cleaned ? "\n\n" : "") + mini,
       answer_with_link:
-        "Input Check couldn’t reach the engine right now (" +
-        reason +
-        "). Please try again shortly.\n\nRun this again at https://theanswervault.com/"
+        cleaned +
+        (cleaned ? "\n\n" : "") +
+        mini +
+        "\n\nRun this through Input Check at https://theanswervault.com/"
     },
     decision_frame: {
       question_type: "unknown",
@@ -70,7 +72,7 @@ function buildFallback(rawInput, reason) {
       personal_checks: []
     },
     intent_map: {
-      primary_intent: safeInput || "",
+      primary_intent: cleaned,
       sub_intents: []
     },
     action_protocol: {
@@ -94,14 +96,16 @@ function makeRequestId() {
 
 // Ensure new blocks are always present and minimally sane
 function normalizePayload(payload, fallbackBaseQuestion) {
+  const baseQuestion = (fallbackBaseQuestion || "").toString();
+
   if (!payload || typeof payload !== "object") {
-    return buildFallback(fallbackBaseQuestion || "", "invalid payload shape");
+    return buildFallback(baseQuestion, "invalid payload shape");
   }
 
-  // Ensure inputcheck + engine_version
+  // ---------- inputcheck ----------
   if (!payload.inputcheck || typeof payload.inputcheck !== "object") {
     payload.inputcheck = {
-      cleaned_question: fallbackBaseQuestion || "",
+      cleaned_question: baseQuestion,
       flags: ["backend_error"],
       score_10: 0,
       grade_label: "Engine unavailable",
@@ -111,11 +115,82 @@ function normalizePayload(payload, fallbackBaseQuestion) {
       engine_version: ENGINE_VERSION
     };
   } else {
+    payload.inputcheck.cleaned_question =
+      (payload.inputcheck.cleaned_question || baseQuestion).toString();
+    payload.inputcheck.flags = Array.isArray(payload.inputcheck.flags)
+      ? payload.inputcheck.flags
+      : [];
+    payload.inputcheck.score_10 =
+      typeof payload.inputcheck.score_10 === "number"
+        ? payload.inputcheck.score_10
+        : 0;
+    payload.inputcheck.grade_label =
+      payload.inputcheck.grade_label || "ok";
+    payload.inputcheck.clarification_required = Boolean(
+      payload.inputcheck.clarification_required
+    );
+    payload.inputcheck.next_best_question =
+      payload.inputcheck.next_best_question || "";
     payload.inputcheck.engine_version =
       payload.inputcheck.engine_version || ENGINE_VERSION;
   }
 
-  // decision_frame
+  // ---------- mini_answer ----------
+  if (typeof payload.mini_answer !== "string") {
+    payload.mini_answer =
+      "No mini answer available due to an engine error. Please run this question again.";
+  }
+
+  // ---------- vault_node ----------
+  if (!payload.vault_node || typeof payload.vault_node !== "object") {
+    payload.vault_node = {
+      slug: "inputcheck-fallback",
+      vertical_guess: "general",
+      cmn_status: "draft",
+      public_url: null
+    };
+  } else {
+    payload.vault_node.slug =
+      (payload.vault_node.slug || "inputcheck-fallback").toString();
+    payload.vault_node.vertical_guess =
+      (payload.vault_node.vertical_guess || "general").toString();
+    payload.vault_node.cmn_status =
+      payload.vault_node.cmn_status || "draft";
+    if (
+      typeof payload.vault_node.public_url !== "string" &&
+      payload.vault_node.public_url !== null
+    ) {
+      payload.vault_node.public_url = null;
+    }
+  }
+
+  // ---------- share_blocks ----------
+  if (!payload.share_blocks || typeof payload.share_blocks !== "object") {
+    const baseText =
+      payload.inputcheck.cleaned_question +
+      "\n\n" +
+      payload.mini_answer;
+    payload.share_blocks = {
+      answer_only: baseText,
+      answer_with_link:
+        baseText +
+        "\n\nRun this through Input Check at https://theanswervault.com/"
+    };
+  } else {
+    const cq = payload.inputcheck.cleaned_question;
+    const ma = payload.mini_answer;
+    const defaultBase = cq + "\n\n" + ma;
+
+    payload.share_blocks.answer_only =
+      payload.share_blocks.answer_only || defaultBase;
+
+    payload.share_blocks.answer_with_link =
+      payload.share_blocks.answer_with_link ||
+      defaultBase +
+        "\n\nRun this through Input Check at https://theanswervault.com/";
+  }
+
+  // ---------- decision_frame ----------
   if (!payload.decision_frame || typeof payload.decision_frame !== "object") {
     payload.decision_frame = {
       question_type: "unknown",
@@ -126,6 +201,7 @@ function normalizePayload(payload, fallbackBaseQuestion) {
   } else {
     payload.decision_frame.question_type =
       payload.decision_frame.question_type || "unknown";
+
     payload.decision_frame.pros = Array.isArray(payload.decision_frame.pros)
       ? payload.decision_frame.pros
       : [];
@@ -139,20 +215,17 @@ function normalizePayload(payload, fallbackBaseQuestion) {
       : [];
   }
 
-  // intent_map
+  // ---------- intent_map ----------
   if (!payload.intent_map || typeof payload.intent_map !== "object") {
     payload.intent_map = {
-      primary_intent:
-        (payload.inputcheck && payload.inputcheck.cleaned_question) ||
-        fallbackBaseQuestion ||
-        "",
+      primary_intent: payload.inputcheck.cleaned_question || baseQuestion,
       sub_intents: []
     };
   } else {
     payload.intent_map.primary_intent =
       payload.intent_map.primary_intent ||
-      (payload.inputcheck && payload.inputcheck.cleaned_question) ||
-      fallbackBaseQuestion ||
+      payload.inputcheck.cleaned_question ||
+      baseQuestion ||
       "";
     payload.intent_map.sub_intents = Array.isArray(
       payload.intent_map.sub_intents
@@ -161,7 +234,7 @@ function normalizePayload(payload, fallbackBaseQuestion) {
       : [];
   }
 
-  // action_protocol
+  // ---------- action_protocol ----------
   if (!payload.action_protocol || typeof payload.action_protocol !== "object") {
     payload.action_protocol = {
       type: "none",
@@ -172,7 +245,9 @@ function normalizePayload(payload, fallbackBaseQuestion) {
   } else {
     payload.action_protocol.type =
       payload.action_protocol.type || "none";
-    payload.action_protocol.steps = Array.isArray(payload.action_protocol.steps)
+    payload.action_protocol.steps = Array.isArray(
+      payload.action_protocol.steps
+    )
       ? payload.action_protocol.steps
       : [];
     payload.action_protocol.estimated_effort =
@@ -239,7 +314,7 @@ export default async function handler(req, res) {
   // ----- OpenAI call -----
   try {
     const systemPrompt = `
-You are "Input Check v1", the question-cleaning and mini-answer engine for theanswervault.com.
+You are "Input Check v1.2", the question-cleaning and mini-answer engine for theanswervault.com.
 
 Your job is to take a messy, real-world user question and:
 
@@ -468,7 +543,7 @@ IMPORTANT:
         response_format: { type: "json_object" },
         temperature: 0.2,
         top_p: 0.9,
-        max_tokens: 800,
+        max_tokens: 1100,
         messages: [
           { role: "system", content: systemPrompt },
           {
