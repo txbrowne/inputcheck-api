@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// Input Check v1.3 – live engine calling OpenAI and returning the fixed JSON contract.
+// Input Check v1.4 – live engine calling OpenAI and returning the fixed JSON contract.
 
 "use strict";
 
@@ -20,7 +20,7 @@ const REQUEST_TIMEOUT_MS = parseInt(
   process.env.INPUTCHECK_TIMEOUT_MS || "20000",
   10
 );
-const ENGINE_VERSION = "inputcheck-v1.3.0";
+const ENGINE_VERSION = "inputcheck-v1.4.0";
 
 // ----------------------------
 // Helpers
@@ -34,7 +34,7 @@ function setCorsHeaders(res) {
 
 // Build a safe fallback payload if OpenAI fails or we hit an internal error
 function buildFallback(rawInput, reason) {
-  const safeInput = (rawInput || "").toString();
+  const safeInput = (rawInput || "").toString().trim();
   const cleaned = safeInput || "";
 
   const mini =
@@ -47,7 +47,7 @@ function buildFallback(rawInput, reason) {
   return {
     inputcheck: {
       cleaned_question: cleaned,
-      canonical_query: cleaned.toLowerCase(),
+      canonical_query: cleaned.toLowerCase() || "",
       flags: ["backend_error"],
       score_10: 0,
       grade_label: "Engine unavailable",
@@ -100,7 +100,7 @@ function makeRequestId() {
 
 // Ensure new blocks are always present and minimally sane
 function normalizePayload(payload, fallbackBaseQuestion) {
-  const baseQuestion = (fallbackBaseQuestion || "").toString();
+  const baseQuestion = (fallbackBaseQuestion || "").toString().trim();
 
   if (!payload || typeof payload !== "object") {
     return buildFallback(baseQuestion, "invalid payload shape");
@@ -120,19 +120,14 @@ function normalizePayload(payload, fallbackBaseQuestion) {
       engine_version: ENGINE_VERSION
     };
   } else {
-    payload.inputcheck.cleaned_question =
-      (payload.inputcheck.cleaned_question || baseQuestion).toString();
+    const cq =
+      (payload.inputcheck.cleaned_question || baseQuestion).toString().trim();
 
-    // canonical_query normalization
-    const canonicalRaw = (
-      payload.inputcheck.canonical_query || ""
-    ).toString().trim();
-    if (canonicalRaw) {
-      payload.inputcheck.canonical_query = canonicalRaw;
-    } else {
-      payload.inputcheck.canonical_query =
-        payload.inputcheck.cleaned_question.toLowerCase();
-    }
+    payload.inputcheck.cleaned_question = cq;
+    payload.inputcheck.canonical_query = (
+      payload.inputcheck.canonical_query ||
+      cq.toLowerCase()
+    ).toString();
 
     payload.inputcheck.flags = Array.isArray(payload.inputcheck.flags)
       ? payload.inputcheck.flags
@@ -333,12 +328,12 @@ export default async function handler(req, res) {
 
   try {
     const systemPrompt = `
-You are "Input Check v1.3", the question-cleaning and mini-answer engine for theanswervault.com.
+You are "Input Check v1.4", the question-cleaning and mini-answer engine for theanswervault.com.
 
 Your job is to take a messy, real-world user question and:
 
 1) Produce ONE clear, answerable "cleaned_question" that focuses on a single primary problem/intent.
-2) Produce a short "canonical_query" that matches how a user would type this into Google Search.
+2) Produce ONE ultra-compact "canonical_query" that represents the same primary intent in Google-style search form.
 3) Generate an AI-Overview-style "mini_answer" (2–5 sentences) that directly answers the cleaned_question.
 4) Suggest ONE "next_best_question" that naturally follows and could be answered as its own Q&A node.
 5) Detect any "input viruses" in the question (vague scope, stacked asks, missing context, safety risk, off-topic) and encode them as flags.
@@ -419,10 +414,11 @@ KEY RULES
   - Avoid "and" joining two different problems.
 
 - canonical_query:
-  - Short Google-style search phrase (about 5–12 words).
-  - No "I", "my", or story context.
-  - Start with the main entity and problem (e.g. "jeep wrangler jl front passenger floor leak fix").
-  - Must express the SAME primary intent as cleaned_question.
+  - Same primary intent as cleaned_question, but in Google-style query form.
+  - 3–12 words, all lowercase, no question mark, minimal stop-words.
+  - Example:
+    - cleaned_question: "How can I fix recurring front passenger floor water leaks on my 2020 Jeep Wrangler JL without paying dealer reseal prices?"
+    - canonical_query: "jeep wrangler jl front passenger floor water leak fix"
 
 - flags:
   - Use only: "vague_scope", "stacked_asks", "missing_context", "safety_risk", "off_topic".
@@ -444,67 +440,9 @@ MINI_ANSWER – AI OVERVIEW STYLE
   1) Sentence 1: direct verdict or main takeaway (Yes/No/Depends/Best viewed as…).
   2) Sentence 2–3: explain the core mechanism or tradeoff (what actually drives the outcome).
   3) Sentence 4 (optional): one concrete "what to do next" action or check.
-- For Yes/No questions:
-  - Start with "Yes, ..." or "No, ..." followed by a brief qualifier, then nuance + micro-action.
-- For "better than" comparison questions:
-  - Usually start with a neutral statement like "Neither X nor Y is universally better; the best option depends on…".
-  - Then 1 sentence for X and 1 for Y, plus a short "best for who" clause.
-- For "is this normal / is this a [brand] thing" reassurance:
-  - You may start with "No, it’s not normal..." or "Yes, this is common..." before explaining cause and practical handling.
 
-DECISION_FRAME
-
-- question_type:
-  - Short label for the question pattern, e.g. "timing_decision", "risk_tradeoff", "method_choice", "diagnostic", "routine_design", or "fact_lookup".
-- pros / cons:
-  - Each item describes one clear advantage or drawback of a major option, action, or timing choice implied by the question.
-  - label: short clause suitable as a bullet heading.
-  - reason: 1–2 sentences explaining why it matters.
-  - tags: 1–3 short tags such as "cost", "risk", "convenience", "health", "time_horizon", "market_conditions".
-  - spawn_question_slug: dash-case slug for a future AnswerVault node that would expand this bullet.
-- personal_checks:
-  - Each item is a self-check that could change what the "best" answer is.
-  - label: ultra-short name (e.g. "Payment comfort").
-  - prompt: full question (e.g. "Can you comfortably afford the projected monthly payment plus taxes and insurance?").
-  - dimension: axis label such as "affordability", "risk_tolerance", "time_horizon", "health_status", "skill_level".
-
-INTENT_MAP
-
-- primary_intent:
-  - Short phrase or question summarizing the same main intent as cleaned_question.
-- sub_intents:
-  - 1–5 additional, standalone questions implied by extra "noise" or side concerns in the raw_input.
-  - Each must be written so it could be answered as its own Q&A node.
-
-ACTION_PROTOCOL
-
-- type:
-  - One of: "decision", "diagnostic", "routine", "planning", "safety" (pick the closest).
-- steps:
-  - 3–6 ordered, concrete steps starting with verbs (e.g. "Calculate…", "Check…", "Schedule…").
-- estimated_effort:
-  - Human-readable estimate such as "10–15 minutes", "30–45 minutes", "half a day".
-- recommended_tools:
-  - 1–4 short slugs for tools/resources that could help, e.g. "mortgage_calculator", "doctor_consult", "jeep_cabin_pressure_test".
-
-vault_node
-
-- slug:
-  - Lower-case, dash-separated slug capturing the SAME single primary intent as cleaned_question.
-- vertical_guess:
-  - Short label for the topic/vertical (e.g. "jeep_leaks", "smp", "window_tint", "finance_personal", "health_general").
-
-share_blocks
-
-- answer_only:
-  - cleaned_question + two line breaks + mini_answer.
-- answer_with_link:
-  - Same as answer_only but add:
-    "Run this through Input Check at https://theanswervault.com/" on a new line.
-
-inputcheck.engine_version
-
-- Always set to "${ENGINE_VERSION}".
+DECISION_FRAME, INTENT_MAP, ACTION_PROTOCOL, vault_node and share_blocks:
+- Follow the same logic as previously: concise, self-contained items that could each spawn their own AnswerVault node or routine.
 
 IMPORTANT:
 - Return ONLY the JSON object described above.
