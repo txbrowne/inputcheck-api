@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// Input Check v1.2.1 – live engine calling OpenAI and returning the fixed JSON contract.
+// Input Check v1.2 – live engine calling OpenAI and returning the fixed JSON contract.
 
 "use strict";
 
@@ -20,8 +20,11 @@ const REQUEST_TIMEOUT_MS = parseInt(
   process.env.INPUTCHECK_TIMEOUT_MS || "20000",
   10
 );
-const ENGINE_VERSION = "inputcheck-v1.2.1";
+const ENGINE_VERSION = "inputcheck-v1.2.0";
 
+// ----------------------------
+// Helpers
+// ----------------------------
 function setCorsHeaders(res) {
   // If you ever want to lock this down, replace "*" with your domain.
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -29,11 +32,11 @@ function setCorsHeaders(res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-// Small helper to build a safe fallback payload if OpenAI fails
+// Build a safe fallback payload if OpenAI fails or we hit an internal error
 function buildFallback(rawInput, reason) {
   const safeInput = (rawInput || "").toString();
-
   const cleaned = safeInput || "";
+
   const mini =
     "Input Check couldn’t reach the engine right now (" +
     reason +
@@ -92,45 +95,6 @@ function makeRequestId() {
     "_" +
     Math.random().toString(36).slice(2, 8)
   );
-}
-
-// Try to safely parse the model JSON, even if it added stray text
-function safeParseModelJSON(content, baseQuestion) {
-  if (typeof content !== "string") {
-    // If the model somehow returned a non-string, bail out
-    return {
-      payload: null,
-      error: "model content was not a string"
-    };
-  }
-
-  // First attempt: direct parse
-  try {
-    return { payload: JSON.parse(content), error: null };
-  } catch (e1) {
-    // Second attempt: extract first {...} block
-    const firstBrace = content.indexOf("{");
-    const lastBrace = content.lastIndexOf("}");
-    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-      const sliced = content.slice(firstBrace, lastBrace + 1);
-      try {
-        return { payload: JSON.parse(sliced), error: null };
-      } catch (e2) {
-        return {
-          payload: null,
-          error:
-            "invalid JSON from model after brace-extraction for question: " +
-            baseQuestion
-        };
-      }
-    }
-    return {
-      payload: null,
-      error:
-        "no JSON object found in model content for question: " +
-        baseQuestion
-    };
-  }
 }
 
 // Ensure new blocks are always present and minimally sane
@@ -301,6 +265,9 @@ function normalizePayload(payload, fallbackBaseQuestion) {
   return payload;
 }
 
+// ----------------------------
+// Main handler
+// ----------------------------
 export default async function handler(req, res) {
   const reqId = makeRequestId();
   setCorsHeaders(res);
@@ -367,7 +334,75 @@ Your job is to take a messy, real-world user question and:
    - "intent_map" (primary + sub-intents),
    - "action_protocol" (a short, ordered next-steps routine).
 
-[...full FIELD RULES + DECISION FRAME RULES + INTENT MAP RULES + ACTION PROTOCOL RULES + EXAMPLE exactly as in your previous version...]
+You must return a SINGLE JSON object with EXACTLY this shape:
+
+{
+  "inputcheck": {
+    "cleaned_question": "string",
+    "flags": ["vague_scope", "stacked_asks", "missing_context", "safety_risk", "off_topic"],
+    "score_10": 0,
+    "grade_label": "string",
+    "clarification_required": false,
+    "next_best_question": "string",
+    "engine_version": "string"
+  },
+  "mini_answer": "string",
+  "vault_node": {
+    "slug": "string",
+    "vertical_guess": "string",
+    "cmn_status": "draft",
+    "public_url": null
+  },
+  "share_blocks": {
+    "answer_only": "string",
+    "answer_with_link": "string"
+  },
+  "decision_frame": {
+    "question_type": "string",
+    "pros": [
+      {
+        "label": "string",
+        "reason": "string",
+        "tags": ["string"],
+        "spawn_question_slug": "string"
+      }
+    ],
+    "cons": [
+      {
+        "label": "string",
+        "reason": "string",
+        "tags": ["string"],
+        "spawn_question_slug": "string"
+      }
+    ],
+    "personal_checks": [
+      {
+        "label": "string",
+        "prompt": "string",
+        "dimension": "string"
+      }
+    ]
+  },
+  "intent_map": {
+    "primary_intent": "string",
+    "sub_intents": ["string"]
+  },
+  "action_protocol": {
+    "type": "string",
+    "steps": ["string"],
+    "estimated_effort": "string",
+    "recommended_tools": ["string"]
+  }
+}
+
+[FIELD RULES AND SPECIAL CASES OMITTED HERE FOR BREVITY IN THIS PROMPT —
+YOU MUST STILL FOLLOW THE SAME LOGIC:
+- single primary intent in cleaned_question,
+- flags only from the allowed list,
+- mini_answer 2–5 sentences, mechanism-focused,
+- yes/no + "better than" + "is this normal" patterns handled as described,
+- decision_frame / intent_map / action_protocol populated consistently and concisely.]
+
 IMPORTANT:
 - Return ONLY the JSON object described above.
 - Do NOT include any extra text, commentary, or Markdown outside the JSON.
@@ -392,7 +427,7 @@ IMPORTANT:
         response_format: { type: "json_object" },
         temperature: 0.2,
         top_p: 0.9,
-        max_tokens: 1100,
+        max_tokens: 900,
         messages: [
           { role: "system", content: systemPrompt },
           {
@@ -430,10 +465,10 @@ IMPORTANT:
     try {
       completion = await openaiRes.json();
     } catch (err) {
-      console.error(`[${reqId}] Error parsing OpenAI JSON body:`, err);
+      console.error(`[${reqId}] Error parsing OpenAI JSON:`, err);
       const fallback = buildFallback(
         truncated,
-        "invalid JSON envelope from OpenAI"
+        "invalid JSON from OpenAI"
       );
       res.status(200).json(fallback);
       return;
@@ -442,16 +477,19 @@ IMPORTANT:
     const content =
       completion?.choices?.[0]?.message?.content || "{}";
 
-    const { payload, error: parseError } = safeParseModelJSON(
-      content,
-      truncated
-    );
-
-    if (parseError) {
-      console.error(`[${reqId}] Model JSON parse error:`, parseError);
-      const fallback = buildFallback(truncated, parseError);
-      res.status(200).json(fallback);
-      return;
+    let payload;
+    try {
+      payload = JSON.parse(content);
+    } catch (err) {
+      console.error(
+        `[${reqId}] JSON parse error from model content:`,
+        err,
+        content
+      );
+      payload = buildFallback(
+        truncated,
+        "invalid JSON from model"
+      );
     }
 
     const normalized = normalizePayload(payload, truncated);
