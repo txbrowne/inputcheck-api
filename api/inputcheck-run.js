@@ -47,6 +47,7 @@ function buildFallback(rawInput, reason) {
   return {
     inputcheck: {
       cleaned_question: cleaned,
+      canonical_query: cleaned.toLowerCase(),
       flags: ["backend_error"],
       score_10: 0,
       grade_label: "Engine unavailable",
@@ -109,6 +110,7 @@ function normalizePayload(payload, fallbackBaseQuestion) {
   if (!payload.inputcheck || typeof payload.inputcheck !== "object") {
     payload.inputcheck = {
       cleaned_question: baseQuestion,
+      canonical_query: baseQuestion.toLowerCase(),
       flags: ["backend_error"],
       score_10: 0,
       grade_label: "Engine unavailable",
@@ -120,6 +122,18 @@ function normalizePayload(payload, fallbackBaseQuestion) {
   } else {
     payload.inputcheck.cleaned_question =
       (payload.inputcheck.cleaned_question || baseQuestion).toString();
+
+    // canonical_query normalization
+    const canonicalRaw = (
+      payload.inputcheck.canonical_query || ""
+    ).toString().trim();
+    if (canonicalRaw) {
+      payload.inputcheck.canonical_query = canonicalRaw;
+    } else {
+      payload.inputcheck.canonical_query =
+        payload.inputcheck.cleaned_question.toLowerCase();
+    }
+
     payload.inputcheck.flags = Array.isArray(payload.inputcheck.flags)
       ? payload.inputcheck.flags
       : [];
@@ -324,11 +338,12 @@ You are "Input Check v1.3", the question-cleaning and mini-answer engine for the
 Your job is to take a messy, real-world user question and:
 
 1) Produce ONE clear, answerable "cleaned_question" that focuses on a single primary problem/intent.
-2) Generate an AI-Overview-style "mini_answer" (2–5 sentences) that directly answers the cleaned_question.
-3) Suggest ONE "next_best_question" that naturally follows and could be answered as its own Q&A node.
-4) Detect any "input viruses" in the question (vague scope, stacked asks, missing context, safety risk, off-topic) and encode them as flags.
-5) Provide a simple guess at the vertical/topic and intent for vault routing.
-6) Build three extra structured layers:
+2) Produce a short "canonical_query" that matches how a user would type this into Google Search.
+3) Generate an AI-Overview-style "mini_answer" (2–5 sentences) that directly answers the cleaned_question.
+4) Suggest ONE "next_best_question" that naturally follows and could be answered as its own Q&A node.
+5) Detect any "input viruses" in the question (vague scope, stacked asks, missing context, safety risk, off-topic) and encode them as flags.
+6) Provide a simple guess at the vertical/topic and intent for vault routing.
+7) Build three extra structured layers:
    - "decision_frame" (pros, cons, personal readiness checks),
    - "intent_map" (primary + sub-intents),
    - "action_protocol" (a short, ordered next-steps routine).
@@ -338,6 +353,7 @@ You must return a SINGLE JSON object with EXACTLY this shape:
 {
   "inputcheck": {
     "cleaned_question": "string",
+    "canonical_query": "string",
     "flags": ["vague_scope", "stacked_asks", "missing_context", "safety_risk", "off_topic"],
     "score_10": 0,
     "grade_label": "string",
@@ -401,6 +417,12 @@ KEY RULES
   - Choose ONE primary problem/intent ONLY.
   - If multiple issues are mentioned (e.g. leaks + wind noise + pricing), pick the most important and actionable and focus ONLY on that.
   - Avoid "and" joining two different problems.
+
+- canonical_query:
+  - Short Google-style search phrase (about 5–12 words).
+  - No "I", "my", or story context.
+  - Start with the main entity and problem (e.g. "jeep wrangler jl front passenger floor leak fix").
+  - Must express the SAME primary intent as cleaned_question.
 
 - flags:
   - Use only: "vague_scope", "stacked_asks", "missing_context", "safety_risk", "off_topic".
