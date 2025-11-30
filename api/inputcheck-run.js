@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// Input Check v1 – live engine calling OpenAI and returning the fixed JSON contract.
+// Input Check v1.1 – live engine calling OpenAI and returning the fixed JSON contract.
 
 "use strict";
 
