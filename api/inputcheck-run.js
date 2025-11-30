@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// Input Check v1 – live engine calling OpenAI and returning the fixed JSON contract.
+// Input Check v1.1 – live engine calling OpenAI and returning the fixed JSON contract.
 
 "use strict";
 
@@ -20,7 +20,9 @@ const REQUEST_TIMEOUT_MS = parseInt(
   process.env.INPUTCHECK_TIMEOUT_MS || "20000",
   10
 );
-const ENGINE_VERSION = "inputcheck-v1.0.0";
+
+// Version tag surfaced back in the payload
+const ENGINE_VERSION = "inputcheck-v1.1.0";
 
 function setCorsHeaders(res) {
   // If you ever want to lock this down, replace "*" with your domain.
@@ -201,6 +203,26 @@ FIELD RULES
   - 2–5 sentences.
   - Directly answers the cleaned_question.
   - Be concrete and mechanism-focused when possible (explain the real cause/fix, not vague filler).
+  - Avoid hallucinating specific numbers, dates, or guarantees; use qualitative language if uncertain.
+
+  - For YES/NO-style questions:
+    - If the cleaned_question is essentially a yes/no question (e.g. "Will X happen?", "Can Y replace Z?", "Is A allowed?"),
+      START the mini_answer with a direct clause such as "Yes, ..." or "No, ..." and immediately follow it with a clear explanation.
+    - After the first sentence, you may add nuance and conditions (e.g. "…in some sectors", "…but it depends on industry and regulation").
+
+  - For COMPARISON or "better" questions:
+    - If the user is asking whether one option is better than another (e.g. "Is SMP better than a hair transplant?", "X vs Y which is better?"),
+      begin by stating that neither option is universally better and that the choice depends on goals, budget, risk tolerance, or context.
+    - In the following sentences, briefly summarize EACH option (one sentence per option): mechanism, permanence, cost, recovery/maintenance.
+    - Include one short clause explaining who each option is best suited for (e.g. "A fits people who want real growing hair; B fits those who prefer a non-surgical, lower-cost option.").
+
+  - For topics involving ONGOING MAINTENANCE or LIFECYCLE:
+    - When relevant (e.g. SMP fading, window film durability, subscription renewals),
+      mention maintenance or touch-up cycles in a short phrase (e.g. "typically needs touch-ups every 3–5 years.").
+
+  - For MACRO DISRUPTION questions (e.g. "Will AI take jobs?", "Will X replace Y industry?"):
+    - After the opener, add one clause identifying which roles/sectors are more exposed and which are relatively safer,
+      without being alarmist or overly specific.
 
 - "vault_node.slug":
   - Lower-case, dash-separated slug capturing the SAME single primary intent as cleaned_question (e.g. "jeep-jl-front-passenger-floor-leak-fix").
