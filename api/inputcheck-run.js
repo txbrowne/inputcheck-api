@@ -1,7 +1,29 @@
 // api/inputcheck-run.js
 // Input Check v1 – live engine calling OpenAI and returning the fixed JSON contract.
 
+"use strict";
+
+// ----------------------------
+// Config
+// ----------------------------
+const OPENAI_MODEL =
+  process.env.INPUTCHECK_MODEL || "gpt-4.1-mini";
+const OPENAI_API_URL =
+  process.env.OPENAI_API_URL || "https://api.openai.com/v1/chat/completions";
+
+// Hard guardrails
+const INPUTCHECK_MAX_CHARS = parseInt(
+  process.env.INPUTCHECK_MAX_CHARS || "2000",
+  10
+);
+const REQUEST_TIMEOUT_MS = parseInt(
+  process.env.INPUTCHECK_TIMEOUT_MS || "20000",
+  10
+);
+const ENGINE_VERSION = "inputcheck-v1.0.0";
+
 function setCorsHeaders(res) {
+  // If you ever want to lock this down, replace "*" with your domain.
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -9,15 +31,17 @@ function setCorsHeaders(res) {
 
 // Small helper to build a safe fallback payload if OpenAI fails
 function buildFallback(rawInput, reason) {
+  const safeInput = (rawInput || "").toString();
   return {
     inputcheck: {
-      cleaned_question: rawInput || "",
+      cleaned_question: safeInput,
       flags: ["backend_error"],
       score_10: 0,
       grade_label: "Engine unavailable",
       clarification_required: false,
       next_best_question:
-        "Try your question again in a moment — the engine had a connection issue."
+        "Try your question again in a moment — the engine had a connection issue.",
+      engine_version: ENGINE_VERSION
     },
     mini_answer:
       "Input Check couldn’t reach the engine right now (" +
@@ -42,7 +66,18 @@ function buildFallback(rawInput, reason) {
   };
 }
 
+// Simple request ID for logging
+function makeRequestId() {
+  return (
+    "ic_" +
+    Date.now().toString(36) +
+    "_" +
+    Math.random().toString(36).slice(2, 8)
+  );
+}
+
 export default async function handler(req, res) {
+  const reqId = makeRequestId();
   setCorsHeaders(res);
 
   // Handle browser preflight
@@ -58,17 +93,36 @@ export default async function handler(req, res) {
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
+    console.error(`[${reqId}] Missing OPENAI_API_KEY`);
     const fallback = buildFallback("", "missing OPENAI_API_KEY on server");
     res.status(200).json(fallback);
     return;
   }
 
   const body = req.body || {};
-  const raw_input = (body.raw_input || "").toString().trim();
+  let raw_input = "";
+
+  try {
+    raw_input = (body.raw_input || "").toString();
+  } catch (err) {
+    console.error(`[${reqId}] Invalid raw_input in body:`, err);
+    res.status(400).json({ error: "raw_input must be a string" });
+    return;
+  }
+
+  raw_input = raw_input.trim();
 
   if (!raw_input) {
     res.status(400).json({ error: "raw_input is required" });
     return;
+  }
+
+  // Enforce max length to avoid runaway cost / prompt injection
+  let truncated = raw_input;
+  let wasTruncated = false;
+  if (truncated.length > INPUTCHECK_MAX_CHARS) {
+    truncated = truncated.slice(0, INPUTCHECK_MAX_CHARS);
+    wasTruncated = true;
   }
 
   // ----- OpenAI call -----
@@ -93,7 +147,8 @@ You must return a SINGLE JSON object with EXACTLY this shape:
     "score_10": 0,
     "grade_label": "string",
     "clarification_required": false,
-    "next_best_question": "string"
+    "next_best_question": "string",
+    "engine_version": "string"
   },
   "mini_answer": "string",
   "vault_node": {
@@ -124,6 +179,7 @@ FIELD RULES
   - missing_context: key facts missing (model/year, location, budget, etc.).
   - safety_risk: injury, hazard, legal/medical risk.
   - off_topic: outside supported domains.
+  - If more than one virus clearly applies, include all applicable flags, not just one.
 
 - "score_10":
   - Integer 0–10 for how clear and vault-ready the cleaned_question + mini_answer are.
@@ -159,6 +215,9 @@ FIELD RULES
 - "share_blocks.answer_with_link":
   - Same as answer_only but ending with: "Run this through Input Check at https://theanswervault.com/".
 
+- "inputcheck.engine_version":
+  - Always set to "${ENGINE_VERSION}".
+
 EXAMPLE FOR MULTI-ISSUE JEEP QUESTION
 
 Raw input (summary):
@@ -175,48 +234,105 @@ IMPORTANT:
 - Do NOT include any extra text, commentary, or Markdown outside the JSON.
     `.trim();
 
-    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+    // AbortController for hard timeout
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      REQUEST_TIMEOUT_MS
+    );
+
+    const openaiRes = await fetch(OPENAI_API_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: "Bearer " + apiKey
       },
+      signal: controller.signal,
       body: JSON.stringify({
-        model: "gpt-4.1-mini",
+        model: OPENAI_MODEL,
         response_format: { type: "json_object" },
+        temperature: 0.2,
+        top_p: 0.9,
+        max_tokens: 800,
         messages: [
           { role: "system", content: systemPrompt },
           {
             role: "user",
-            content: JSON.stringify({ raw_input })
+            content: JSON.stringify({
+              raw_input: truncated,
+              original_length: raw_input.length,
+              was_truncated: wasTruncated
+            })
           }
         ]
       })
+    }).catch((err) => {
+      // fetch itself can throw before we reach ok-status check
+      throw err;
     });
+
+    clearTimeout(timeout);
 
     if (!openaiRes.ok) {
       const text = await openaiRes.text();
-      console.error("OpenAI error:", openaiRes.status, text);
-      const fallback = buildFallback(raw_input, "OpenAI HTTP " + openaiRes.status);
+      console.error(
+        `[${reqId}] OpenAI error ${openaiRes.status}:`,
+        text
+      );
+      const fallback = buildFallback(
+        truncated,
+        "OpenAI HTTP " + openaiRes.status
+      );
       res.status(200).json(fallback);
       return;
     }
 
-    const completion = await openaiRes.json();
-    const content = completion.choices?.[0]?.message?.content || "{}";
+    let completion;
+    try {
+      completion = await openaiRes.json();
+    } catch (err) {
+      console.error(`[${reqId}] Error parsing OpenAI JSON:`, err);
+      const fallback = buildFallback(
+        truncated,
+        "invalid JSON from OpenAI"
+      );
+      res.status(200).json(fallback);
+      return;
+    }
+
+    const content =
+      completion?.choices?.[0]?.message?.content || "{}";
 
     let payload;
     try {
       payload = JSON.parse(content);
     } catch (err) {
-      console.error("JSON parse error from OpenAI:", err, content);
-      payload = buildFallback(raw_input, "invalid JSON from model");
+      console.error(
+        `[${reqId}] JSON parse error from model content:`,
+        err,
+        content
+      );
+      payload = buildFallback(
+        truncated,
+        "invalid JSON from model"
+      );
+    }
+
+    // Ensure engine_version is always present
+    if (payload && payload.inputcheck) {
+      payload.inputcheck.engine_version =
+        payload.inputcheck.engine_version || ENGINE_VERSION;
     }
 
     res.status(200).json(payload);
   } catch (err) {
-    console.error("Unexpected InputCheck error:", err);
-    const fallback = buildFallback(raw_input, "unexpected server error");
+    const reason =
+      err && err.name === "AbortError"
+        ? "OpenAI request timeout"
+        : "unexpected server error";
+
+    console.error(`[${reqId}] Unexpected InputCheck error:`, err);
+    const fallback = buildFallback(raw_input, reason);
     res.status(200).json(fallback);
   }
 }
