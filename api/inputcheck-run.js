@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// Input Check v1.4 – live engine calling OpenAI and returning the fixed JSON contract.
+// Input Check v1.3 – live engine calling OpenAI and returning the fixed JSON contract.
 
 "use strict";
 
@@ -20,7 +20,7 @@ const REQUEST_TIMEOUT_MS = parseInt(
   process.env.INPUTCHECK_TIMEOUT_MS || "20000",
   10
 );
-const ENGINE_VERSION = "inputcheck-v1.4.0";
+const ENGINE_VERSION = "inputcheck-v1.3.0";
 
 // ----------------------------
 // Helpers
@@ -47,7 +47,7 @@ function buildFallback(rawInput, reason) {
   return {
     inputcheck: {
       cleaned_question: cleaned,
-      canonical_query: cleaned.toLowerCase() || "",
+      canonical_query: cleaned, // fallback: mirror cleaned_question
       flags: ["backend_error"],
       score_10: 0,
       grade_label: "Engine unavailable",
@@ -100,7 +100,7 @@ function makeRequestId() {
 
 // Ensure new blocks are always present and minimally sane
 function normalizePayload(payload, fallbackBaseQuestion) {
-  const baseQuestion = (fallbackBaseQuestion || "").toString().trim();
+  const baseQuestion = (fallbackBaseQuestion || "").toString();
 
   if (!payload || typeof payload !== "object") {
     return buildFallback(baseQuestion, "invalid payload shape");
@@ -110,7 +110,7 @@ function normalizePayload(payload, fallbackBaseQuestion) {
   if (!payload.inputcheck || typeof payload.inputcheck !== "object") {
     payload.inputcheck = {
       cleaned_question: baseQuestion,
-      canonical_query: baseQuestion.toLowerCase(),
+      canonical_query: baseQuestion,
       flags: ["backend_error"],
       score_10: 0,
       grade_label: "Engine unavailable",
@@ -120,14 +120,15 @@ function normalizePayload(payload, fallbackBaseQuestion) {
       engine_version: ENGINE_VERSION
     };
   } else {
-    const cq =
-      (payload.inputcheck.cleaned_question || baseQuestion).toString().trim();
+    payload.inputcheck.cleaned_question =
+      (payload.inputcheck.cleaned_question || baseQuestion).toString();
 
-    payload.inputcheck.cleaned_question = cq;
-    payload.inputcheck.canonical_query = (
-      payload.inputcheck.canonical_query ||
-      cq.toLowerCase()
-    ).toString();
+    // Ensure canonical_query exists and is a simple string
+    let cq = payload.inputcheck.canonical_query;
+    if (typeof cq !== "string" || !cq.trim()) {
+      cq = payload.inputcheck.cleaned_question || baseQuestion;
+    }
+    payload.inputcheck.canonical_query = cq.toString().trim();
 
     payload.inputcheck.flags = Array.isArray(payload.inputcheck.flags)
       ? payload.inputcheck.flags
@@ -328,12 +329,12 @@ export default async function handler(req, res) {
 
   try {
     const systemPrompt = `
-You are "Input Check v1.4", the question-cleaning and mini-answer engine for theanswervault.com.
+You are "Input Check v1.3", the question-cleaning and mini-answer engine for theanswervault.com.
 
 Your job is to take a messy, real-world user question and:
 
 1) Produce ONE clear, answerable "cleaned_question" that focuses on a single primary problem/intent.
-2) Produce ONE ultra-compact "canonical_query" that represents the same primary intent in Google-style search form.
+2) Produce ONE concise "canonical_query" string that represents how this question would most likely be typed into a Google search box.
 3) Generate an AI-Overview-style "mini_answer" (2–5 sentences) that directly answers the cleaned_question.
 4) Suggest ONE "next_best_question" that naturally follows and could be answered as its own Q&A node.
 5) Detect any "input viruses" in the question (vague scope, stacked asks, missing context, safety risk, off-topic) and encode them as flags.
@@ -405,44 +406,21 @@ You must return a SINGLE JSON object with EXACTLY this shape:
   }
 }
 
-KEY RULES
+CANONICAL_QUERY RULES
 
-- cleaned_question:
-  - Rewrite as one clear, specific, single question.
-  - Choose ONE primary problem/intent ONLY.
-  - If multiple issues are mentioned (e.g. leaks + wind noise + pricing), pick the most important and actionable and focus ONLY on that.
-  - Avoid "and" joining two different problems.
+- "canonical_query" is a short, Google-style search phrase derived from the cleaned_question.
+- It should look like what a user would actually type into the Google search bar.
+- 3–12 words, lower friction, minimal punctuation.
+- Avoid pronouns like "I", "my", "me" unless truly necessary.
+- Good examples:
+  - "jeep jl front passenger floor leak fix"
+  - "is smp better than hair transplant"
+  - "how many hours of sleep do adult women need"
+- Bad examples:
+  - Full sentences with extra commentary.
+  - Including "according to inputcheck" or references to the engine.
 
-- canonical_query:
-  - Same primary intent as cleaned_question, but in Google-style query form.
-  - 3–12 words, all lowercase, no question mark, minimal stop-words.
-  - Example:
-    - cleaned_question: "How can I fix recurring front passenger floor water leaks on my 2020 Jeep Wrangler JL without paying dealer reseal prices?"
-    - canonical_query: "jeep wrangler jl front passenger floor water leak fix"
-
-- flags:
-  - Use only: "vague_scope", "stacked_asks", "missing_context", "safety_risk", "off_topic".
-  - Apply all that clearly apply; otherwise leave the array empty.
-
-- score_10 / grade_label:
-  - score_10: 0–10 for how clear and vault-ready cleaned_question + mini_answer are.
-  - grade_label: short word matching the score (e.g. "weak", "ok", "good", "excellent").
-
-- clarification_required:
-  - true only if you cannot safely or meaningfully answer without more information.
-
-MINI_ANSWER – AI OVERVIEW STYLE
-
-- Treat mini_answer as if it will be the first paragraph of an AI Overview or featured snippet.
-- Length: 2–5 sentences, usually 45–90 words. No bullet points, no headings.
-- Use neutral, third-person, factual tone. Do NOT refer to "this answer", "the user", or "the question".
-- Structure:
-  1) Sentence 1: direct verdict or main takeaway (Yes/No/Depends/Best viewed as…).
-  2) Sentence 2–3: explain the core mechanism or tradeoff (what actually drives the outcome).
-  3) Sentence 4 (optional): one concrete "what to do next" action or check.
-
-DECISION_FRAME, INTENT_MAP, ACTION_PROTOCOL, vault_node and share_blocks:
-- Follow the same logic as previously: concise, self-contained items that could each spawn their own AnswerVault node or routine.
+Other rules (cleaned_question, flags, mini_answer, decision_frame, intent_map, action_protocol, vault_node, share_blocks) follow the same logic as previously described: single primary intent, 2–5 sentence AI-Overview-style mini_answer, etc.
 
 IMPORTANT:
 - Return ONLY the JSON object described above.
