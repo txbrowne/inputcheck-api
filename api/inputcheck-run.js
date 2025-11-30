@@ -23,6 +23,15 @@ const REQUEST_TIMEOUT_MS = parseInt(
 );
 const ENGINE_VERSION = "inputcheck-v1.5.0";
 
+// Allowed vertical guesses for routing
+const ALLOWED_VERTICALS = [
+  "jeep_leaks",
+  "smp",
+  "window_tint",
+  "ai_systems",
+  "general"
+];
+
 // ----------------------------
 // Helpers
 // ----------------------------
@@ -146,6 +155,15 @@ function normalizeChecksArray(arr) {
   });
 }
 
+// Normalize vertical_guess to allowed set
+function normalizeVerticalGuess(v) {
+  const val = (v || "").toString().trim();
+  if (!val) return "general";
+  const lower = val.toLowerCase();
+  if (ALLOWED_VERTICALS.includes(lower)) return lower;
+  return "general";
+}
+
 // Ensure new blocks are always present and minimally sane
 function normalizePayload(payload, fallbackBaseQuestion) {
   const baseQuestion = (fallbackBaseQuestion || "").toString();
@@ -224,10 +242,14 @@ function normalizePayload(payload, fallbackBaseQuestion) {
   } else {
     payload.vault_node.slug =
       (payload.vault_node.slug || "inputcheck-fallback").toString();
-    payload.vault_node.vertical_guess =
-      (payload.vault_node.vertical_guess || "general").toString();
+
+    payload.vault_node.vertical_guess = normalizeVerticalGuess(
+      payload.vault_node.vertical_guess
+    );
+
     payload.vault_node.cmn_status =
       payload.vault_node.cmn_status || "draft";
+
     if (
       typeof payload.vault_node.public_url !== "string" &&
       payload.vault_node.public_url !== null
