@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// InputCheck Raptor-3 – raw_input -> answer capsule + mini-answer (AI Overview style)
+// InputCheck Capsule Engine v2 – raw_input -> answer capsule + mini-answer (no Google-style query).
 
 "use strict";
 
@@ -20,7 +20,7 @@ const REQUEST_TIMEOUT_MS = parseInt(
   10
 );
 
-const ENGINE_VERSION = "inputcheck-raptor-3.0.0";
+const ENGINE_VERSION = "inputcheck-capsule-v2.0.0";
 
 // ----------------------------
 // Helpers
@@ -41,14 +41,14 @@ function makeRequestId() {
   );
 }
 
-// Fallback if OpenAI fails or we hit an internal error
+// Fallback if OpenAI fails
 function buildFallback(rawInput, reason, wasTruncated) {
   const safeInput = (rawInput || "").toString().trim();
 
   const capsule =
-    "No answer is available right now because the engine could not complete your request safely. Try again soon or simplify the question.";
+    "No answer is available right now because the capsule engine could not complete your request safely. Try again later or simplify the question.";
   const mini =
-    "The capsule engine had a technical issue or timeout while processing this question. If the problem continues, review logs and confirm the API key, model, and network are working.";
+    "The capsule engine hit a technical issue or timeout while processing this question. If the problem continues, review logs and confirm the API key, model, and network are working correctly.";
 
   return {
     raw_input: safeInput,
@@ -127,19 +127,33 @@ export default async function handler(req, res) {
 
   try {
     const systemPrompt = `
-You are "InputCheck Raptor-3", a capsule-first AI Overview engine for theanswervault.com.
+You are "InputCheck Capsule Engine v2", a capsule-first AI Overview generator for theanswervault.com.
 
 Your ONLY job for each request:
-1) Read the user's raw_input (a messy natural-language question or rant).
-2) Generate ONE snippet-ready answer capsule (~20–25 words).
-3) Generate ONE short mini-answer (3–5 sentences) that supports and extends the capsule.
+1) Read the user's raw_input (a messy natural-language question or thought).
+2) Answer that input with:
+   - ONE snippet-ready answer capsule (~20–25 words).
+   - ONE short mini-answer (3–5 sentences).
 
-You are NOT cleaning or rewriting the question into a separate query string.
-Treat raw_input as the question you are answering.
+Rules for "answer_capsule_25w":
+- ONE sentence, roughly 20–25 words, that directly answers the user's main question.
+- For yes/no-style questions (is, are, can, will, should) start with an explicit stance:
+  - "Yes, ...", "No, ...", or "It depends, but generally ...".
+- Include at least one key condition, trade-off, or caveat when relevant.
+- Use clear entities (e.g., "AI bubble", "Jeep Wrangler JL A-pillar", "intermittent fasting") instead of vague pronouns.
+- Do NOT include URLs.
 
-------------------------------------------------
-OUTPUT JSON SHAPE
-------------------------------------------------
+Rules for "mini_answer":
+- 3–5 short sentences.
+- The FIRST sentence must NOT repeat the capsule's main claim in similar wording. It must add new information such as mechanism, who it applies to, timeline, or key limitation.
+- Use the mini_answer to explain WHY the capsule is true, WHEN it might change, WHO is most affected, and WHAT simple steps the user should take next.
+- One main idea per sentence. No bullets, no markdown, no rhetorical questions.
+- Do NOT include URLs.
+
+Safety:
+- For health, legal, financial, or other high-stakes topics, keep guidance general, avoid detailed how-to instructions, and advise consulting qualified professionals.
+- Use cautious language like "may", "could", or "is likely" instead of absolute certainty when outcomes are uncertain.
+
 You must return a SINGLE JSON object with EXACTLY this shape:
 
 {
@@ -148,58 +162,8 @@ You must return a SINGLE JSON object with EXACTLY this shape:
 }
 
 Do NOT add or remove keys.
-Do NOT include raw_input, meta, or any other fields.
 All fields must be plain strings (never null).
-Do NOT include any extra text, comments, or markdown outside the JSON.
-
-------------------------------------------------
-ANSWER CAPSULE ("answer_capsule_25w")
-------------------------------------------------
-- ONE sentence, roughly 20–25 words, that directly answers the question implied by raw_input.
-- Write it as if it were the lead sentence of a high-quality Google AI Overview.
-- No URLs, no "click here", no site names.
-
-Stance rules for yes/no-style questions:
-- If the question is essentially "is/are/can/will/should X ...", start with:
-  - "Yes, ..." when the answer is broadly yes;
-  - "No, ..." when the answer is broadly no;
-  - or "It depends, but generally ..." when nuance is important.
-- Include at least one key condition, caveat, or trade-off when relevant.
-- Use clear entities ("Jeep Wrangler JL A-pillar", "CBD oil", "intermittent fasting") instead of vague pronouns.
-
-------------------------------------------------
-MINI ANSWER ("mini_answer")
-------------------------------------------------
-- 3–5 short sentences.
-- The FIRST sentence must NOT repeat the capsule's main claim in similar wording.
-  - It must add new information, such as:
-    - the key mechanism,
-    - who it applies to,
-    - typical timeline,
-    - or the main limitation or exception.
-- Use the mini_answer to explain:
-  - WHY the capsule is true,
-  - WHEN it might change,
-  - WHO is most affected,
-  - and WHAT simple next steps the user should take.
-- One main idea per sentence.
-- No bullets, no lists, no markdown, no rhetorical questions.
-- Do NOT include URLs.
-
-------------------------------------------------
-SAFETY & HIGH-STAKES TOPICS
-------------------------------------------------
-For health, legal, financial, and other safety-sensitive or high-impact topics:
-- Keep guidance general and high-level.
-- Do NOT provide detailed instructions that enable unsafe, illegal, or irreversible actions.
-- Emphasize that individual situations vary (health conditions, jurisdiction, financial situation, skills).
-- Encourage consulting qualified professionals (doctors, lawyers, financial advisors, certified technicians) before making major decisions.
-- Avoid absolute guarantees; prefer cautious language such as "often", "may", "typically", "in many cases".
-
-Remember:
-- Answer directly and clearly.
-- Prioritize decision-ready clarity over exhaustive detail.
-- Return ONLY the JSON object described above.
+Do NOT include any extra text, comments, or markdown.
 `.trim();
 
     // AbortController for hard timeout
@@ -321,7 +285,7 @@ Remember:
         ? "OpenAI request timeout"
         : "unexpected server error";
 
-    console.error(`[${reqId}] Unexpected Raptor-3 engine error:`, err);
+    console.error(`[${reqId}] Unexpected Capsule Engine error:`, err);
     const fallback = buildFallback(raw_input, reason, false);
     fallback.meta.request_id = reqId;
     res.status(200).json(fallback);
