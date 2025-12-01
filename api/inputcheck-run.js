@@ -1,5 +1,5 @@
-// api/query-condense.js
-// Query Condenser v1 – turns messy natural language into a short Google-style query.
+// api/inputcheck-run.js
+// InputCheck Capsule Engine v1 – raw_input -> canonical_query -> answer capsule + mini-answer.
 
 "use strict";
 
@@ -7,20 +7,20 @@
 // Config
 // ----------------------------
 const OPENAI_MODEL =
-  process.env.QUERYCONDENSE_MODEL || "gpt-4.1-mini";
+  process.env.INPUTCHECK_MODEL || "gpt-4.1-mini";
 const OPENAI_API_URL =
   process.env.OPENAI_API_URL || "https://api.openai.com/v1/chat/completions";
 
 const INPUT_MAX_CHARS = parseInt(
-  process.env.QUERYCONDENSE_MAX_CHARS || "2000",
+  process.env.INPUTCHECK_MAX_CHARS || "2000",
   10
 );
 const REQUEST_TIMEOUT_MS = parseInt(
-  process.env.QUERYCONDENSE_TIMEOUT_MS || "15000",
+  process.env.INPUTCHECK_TIMEOUT_MS || "20000",
   10
 );
 
-const ENGINE_VERSION = "query-condenser-v1.0.0";
+const ENGINE_VERSION = "inputcheck-capsule-v1.0.0";
 
 // ----------------------------
 // Helpers
@@ -34,53 +34,48 @@ function setCorsHeaders(res) {
 
 function makeRequestId() {
   return (
-    "qc_" +
+    "ic_" +
     Date.now().toString(36) +
     "_" +
     Math.random().toString(36).slice(2, 8)
   );
 }
 
-// Simple fallback condenser if OpenAI fails
-function buildFallback(rawInput, reason) {
+// Fallback if OpenAI fails
+function buildFallback(rawInput, reason, wasTruncated) {
   const safeInput = (rawInput || "").toString().trim();
 
-  if (!safeInput) {
-    return {
-      canonical_query: "",
-      meta: {
-        request_id: null,
-        engine_version: ENGINE_VERSION,
-        model: OPENAI_MODEL,
-        processing_time_ms: null,
-        input_length_chars: 0,
-        was_truncated: false,
-        backend_error: true,
-        reason: reason || "empty input"
-      }
-    };
+  // Naive canonical_query: lowercase, strip punctuation, trim to 12 words
+  let canonical = "";
+  if (safeInput) {
+    const lower = safeInput.toLowerCase();
+    const stripped = lower.replace(/[^a-z0-9\s\?]/g, " ");
+    const words = stripped
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 12);
+    canonical = words.join(" ");
   }
 
-  // naive normalization: lowercase, strip most punctuation, compress whitespace
-  const lower = safeInput.toLowerCase();
-  const stripped = lower.replace(/[^a-z0-9\s\?\-]/g, " ");
-  const words = stripped
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 12);
-  const canonical = words.join(" ");
+  const capsule =
+    "No answer is available right now because the engine could not complete your request safely. Try again in a moment or simplify the question.";
+  const mini =
+    "The capsule engine had a technical issue or timeout while processing this question. If the problem continues, review logs and confirm the API key, model, and network are working.";
 
   return {
+    raw_input: safeInput,
     canonical_query: canonical,
+    answer_capsule_25w: capsule,
+    mini_answer: mini,
     meta: {
       request_id: null,
       engine_version: ENGINE_VERSION,
       model: OPENAI_MODEL,
       processing_time_ms: null,
       input_length_chars: safeInput.length,
-      was_truncated: safeInput.length > INPUT_MAX_CHARS,
+      was_truncated: Boolean(wasTruncated),
       backend_error: true,
-      reason: reason || "fallback condenser used"
+      reason: reason || "fallback"
     }
   };
 }
@@ -107,8 +102,7 @@ export default async function handler(req, res) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     console.error(`[${reqId}] Missing OPENAI_API_KEY`);
-    const fallback = buildFallback("", "missing OPENAI_API_KEY on server");
-    // inject request_id into meta
+    const fallback = buildFallback("", "missing OPENAI_API_KEY on server", false);
     fallback.meta.request_id = reqId;
     res.status(200).json(fallback);
     return;
@@ -142,39 +136,50 @@ export default async function handler(req, res) {
 
   try {
     const systemPrompt = `
-You are "Query Condenser v1", a tiny engine that converts messy natural language questions into short, search-style Google queries.
+You are "InputCheck Capsule Engine v1", a capsule-first AI Overview generator for theanswervault.com.
 
-Your ONLY job:
-- Read the user's raw_input.
-- Produce ONE short canonical search query that a user would realistically type into Google to get a good answer.
+Your ONLY job for each request:
+1) Read the user's raw_input.
+2) Convert it into ONE short Google-style search query ("canonical_query").
+3) Answer that query with ONE snippet-ready answer capsule (~20–25 words) and ONE short mini-answer (3–5 sentences).
 
 Rules for "canonical_query":
 - 3–12 words.
 - All lowercase.
-- No punctuation except spaces and an optional question mark.
-- Use generic language, not "I" / "my", unless absolutely necessary for meaning.
-- Always keep the main entities and task or comparison.
-- Remove emotional language, side stories, and extra details unless they materially change the intent.
+- No commas, quotes, or extra punctuation; only letters, numbers, spaces, and an optional question mark at the end.
+- Keep the main entities (brands, models, locations) and the core task or comparison.
+- Remove filler like "basically", "actually", "really", "just", "or is it more like".
+- If the user asks about "A or B" or "X vs Y", keep both options in a compressed form, e.g. "smp vs hair transplant cost and downtime".
 
-Examples:
-- raw_input: "Why does the front passenger floor of my 2019 Jeep JL keep getting soaked after storms even though the dealer said they fixed the leak?"
-  → canonical_query: "jeep jl 2019 passenger floor wet after rain"
+Rules for "answer_capsule_25w":
+- ONE sentence, roughly 20–25 words, that directly answers the canonical_query.
+- For yes/no-style questions (is, are, can, will, should) start with an explicit stance: "Yes, ...", "No, ...", or "It depends, but generally ...".
+- Include at least one key condition, trade-off, or caveat when relevant.
+- Use clear entities instead of vague pronouns.
+- Do NOT include URLs.
 
-- raw_input: "At almost 40 with kids and a full-time job, is it too late to pivot into AI or learn coding seriously?"
-  → canonical_query: "is it too late to learn coding at 40"
+Rules for "mini_answer":
+- 3–5 short sentences.
+- The FIRST sentence must NOT repeat the capsule's main claim in similar wording. It must add new information such as mechanism, who it applies to, timeline, or key limitation.
+- Use the mini_answer to explain WHY the capsule is true, WHEN it might change, WHO is most affected, and WHAT simple steps the user should take next.
+- One main idea per sentence. No bullets, no markdown, no rhetorical questions.
+- Do NOT include URLs.
 
-- raw_input: "For thinning hair, is SMP or a hair transplant actually the smarter move when you factor cost and downtime?"
-  → canonical_query: "smp vs hair transplant cost and downtime"
+Safety:
+- For health, legal, financial, or other high-stakes topics, keep guidance general, avoid detailed how-to instructions, and advise consulting qualified professionals.
 
 You must return a SINGLE JSON object with EXACTLY this shape:
 
 {
-  "canonical_query": "string"
+  "raw_input": "string",
+  "canonical_query": "string",
+  "answer_capsule_25w": "string",
+  "mini_answer": "string"
 }
 
 Do NOT add or remove keys.
-Do NOT include any explanations, comments, or markdown.
-Return ONLY the JSON object.
+All fields must be plain strings (never null).
+Do NOT include any extra text, comments, or markdown.
 `.trim();
 
     // AbortController for hard timeout
@@ -196,7 +201,7 @@ Return ONLY the JSON object.
         response_format: { type: "json_object" },
         temperature: 0.1,
         top_p: 0.8,
-        max_tokens: 150,
+        max_tokens: 400,
         messages: [
           { role: "system", content: systemPrompt },
           {
@@ -223,7 +228,8 @@ Return ONLY the JSON object.
       );
       const fallback = buildFallback(
         truncated,
-        "OpenAI HTTP " + openaiRes.status
+        "OpenAI HTTP " + openaiRes.status,
+        wasTruncated
       );
       fallback.meta.request_id = reqId;
       res.status(200).json(fallback);
@@ -237,14 +243,16 @@ Return ONLY the JSON object.
       console.error(`[${reqId}] Error parsing OpenAI JSON:`, err);
       const fallback = buildFallback(
         truncated,
-        "invalid JSON from OpenAI"
+        "invalid JSON from OpenAI",
+        wasTruncated
       );
       fallback.meta.request_id = reqId;
       res.status(200).json(fallback);
       return;
     }
 
-    const content = completion?.choices?.[0]?.message?.content || "{}";
+    const content =
+      completion?.choices?.[0]?.message?.content || "{}";
 
     let payload;
     try {
@@ -257,7 +265,8 @@ Return ONLY the JSON object.
       );
       const fallback = buildFallback(
         truncated,
-        "invalid JSON from model"
+        "invalid JSON from model",
+        wasTruncated
       );
       fallback.meta.request_id = reqId;
       res.status(200).json(fallback);
@@ -265,11 +274,16 @@ Return ONLY the JSON object.
     }
 
     const canonical = (payload.canonical_query || "").toString().trim();
+    const capsule = (payload.answer_capsule_25w || "").toString().trim();
+    const mini = (payload.mini_answer || "").toString().trim();
 
     const processing_time_ms = Date.now() - startTime;
 
     const responseBody = {
+      raw_input,
       canonical_query: canonical,
+      answer_capsule_25w: capsule,
+      mini_answer: mini,
       meta: {
         request_id: reqId,
         engine_version: ENGINE_VERSION,
@@ -277,7 +291,8 @@ Return ONLY the JSON object.
         processing_time_ms,
         input_length_chars: raw_input.length,
         was_truncated: wasTruncated,
-        backend_error: false
+        backend_error: false,
+        reason: ""
       }
     };
 
@@ -288,8 +303,8 @@ Return ONLY the JSON object.
         ? "OpenAI request timeout"
         : "unexpected server error";
 
-    console.error(`[${reqId}] Unexpected Query Condenser error:`, err);
-    const fallback = buildFallback(raw_input, reason);
+    console.error(`[${reqId}] Unexpected Capsule Engine error:`, err);
+    const fallback = buildFallback(raw_input, reason, false);
     fallback.meta.request_id = reqId;
     res.status(200).json(fallback);
   }
