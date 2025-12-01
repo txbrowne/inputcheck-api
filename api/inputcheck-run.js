@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// Input Check Raptor-3 – live engine calling OpenAI and returning the fixed JSON contract
+// Input Check Raptor-3 – capsule-first engine calling OpenAI and returning the fixed JSON contract
 // with meta + banking_hint for AnswerVault + miner integration.
 
 "use strict";
@@ -89,7 +89,6 @@ function buildFallback(rawInput, reason) {
       estimated_effort: "",
       recommended_tools: []
     },
-    // Raptor-3 fields
     answer_capsule_25w: "",
     owned_insight: ""
   };
@@ -381,8 +380,8 @@ function buildBankingHint(ic) {
   if (!hardHit && score >= 8) recommended_status = "queued";
 
   return {
-    recommended_status, // draft / queued (advisory)
-    confidence_bucket, // high / medium / low
+    recommended_status,           // draft / queued (advisory)
+    confidence_bucket,            // high / medium / low
     auto_bank_recommended: !hardHit && score >= 7,
     reason: hardHit
       ? "Hard flag present (safety_risk, backend_error, or off_topic)."
@@ -625,8 +624,6 @@ ANSWER CAPSULE (AI OVERVIEW SNIPPET)
 - Use clear entities instead of vague pronouns when helpful.
 - Do NOT include URLs.
 
-Think of the capsule as something Google could lift directly as an AI Overview snippet.
-
 ------------------------------------------------
 MINI ANSWER (SUPPORTING DETAIL ONLY)
 ------------------------------------------------
@@ -641,89 +638,32 @@ MINI ANSWER (SUPPORTING DETAIL ONLY)
   - WHAT simple next steps someone should consider.
 - Do NOT include URLs.
 
-Example pattern (not literal text):
-- Sentence 1: extra context or mechanism.
-- Sentence 2–3: key factors, caveats, or examples.
-- Sentence 4–5: simple, practical next steps.
+------------------------------------------------
+FLAGS, SCORE, CLARIFICATION
+------------------------------------------------
+Use "flags", "score_10", "grade_label", "clarification_required", and "next_best_question" to briefly describe answer quality, safety, and one valuable follow-up question.
 
 ------------------------------------------------
-FLAGS, SCORE, CLARIFICATION, NEXT BEST QUESTION
+LOWER-PRIORITY FIELDS
 ------------------------------------------------
-"flags": subset of ["vague_scope", "stacked_asks", "missing_context", "safety_risk", "off_topic"].
-- Mark only what clearly applies.
-
-"score_10":
-- 0–10 rating of how safely and precisely you answered.
-- Use 8–10 only if the question is clear, focused, and safe at a general-information level.
-
-"grade_label":
-- Short summary label like:
-  "Too vague", "Good", "Strong answer", "Unsafe / needs expert", "Stacked asks", "Engine error".
-
-"clarification_required":
-- true ONLY when you should not answer directly without more info (usually serious health/legal/financial cases).
-- If a safe, high-level answer is possible, keep this false and rely on flags plus cautious language.
-
-"next_best_question":
-- ONE follow-up question in the same domain, one level deeper or more specific, valuable as its own Q&A node.
-
-------------------------------------------------
-LOWER-PRIORITY FIELDS (KEEP SIMPLE)
-------------------------------------------------
-You may keep these fields minimal and generic so long as they are valid and consistent:
-
-- "decision_frame.question_type":
-  - Use simple labels like "fact_lookup", "diagnostic", "how_to_repair", "high_intent_product_choice", "comparison_choice", "personal_growth_decision", "business_strategy", "career_strategy", "everyday_legal_rights", or "general" when unsure.
-
-- "decision_frame.pros" and "cons":
-  - 0–2 items each, short labels and reasons.
-
-- "personal_checks":
-  - 0–2 items, short reflective questions.
-
-- "intent_map":
-  - "primary_intent": plain-language statement of what the user is trying to achieve.
-  - "sub_intents": 0–3 short tags like "save_money", "avoid_risk", "compare_options", "learn_basics".
-
-- "action_protocol":
-  - "type": short label like "diagnostic_steps", "decision_checklist", "self_education", "talk_to_pro".
-  - "steps": 3–4 short sentences as ordered steps.
-  - "estimated_effort": simple phrase like "15–30 minutes", "a few hours", "a weekend".
-  - "recommended_tools": 0–3 generic tools like "general_web_search", "spreadsheet", "licensed_healthcare_provider", "professional_mechanic".
-
-- "vault_node":
-  - "slug": URL-safe, lowercase, hyphenated version of cleaned_question.
-  - "vertical_guess": short routing label like "jeep_leaks", "smp", "window_tint", "ai_systems", "general".
-  - "cmn_status": "draft".
-  - "public_url": null.
-
-- "share_blocks":
-  - "answer_only": cleaned_question + "\\n\\n" + mini_answer.
-  - "answer_with_link": same as answer_only plus:
-    "Run this through Input Check at https://theanswervault.com/"
-
-- "owned_insight":
-  - Optional one-line rule-of-thumb or heuristic that adds extra value.
-  - Use "" if nothing meaningful comes to mind.
-  - Do NOT repeat the capsule.
+Keep decision_frame, intent_map, action_protocol, vault_node, share_blocks, and owned_insight valid but concise and generic when needed.
 
 ------------------------------------------------
 GLOBAL STYLE & SAFETY
 ------------------------------------------------
+- Set "inputcheck.engine_version" to "${ENGINE_VERSION}".
 - Do NOT mention JSON, prompts, engines, Input Check, OpenAI, or models in any user-facing fields.
 - Do NOT include URLs in "answer_capsule_25w" or "mini_answer".
-
 - For health, legal, financial, or safety-sensitive DIY topics:
   - Keep answers high-level and general.
   - Emphasize that individual situations vary.
   - Encourage consulting qualified professionals before acting.
   - Set "safety_risk" in flags when there is meaningful personal risk.
-
-- For questions about trusting or replacing AI:
-  - Make clear that AI usually complements rather than fully replaces search engines or human experts.
-  - Suggest verifying important information with reputable sources before acting.
+- For questions about trusting or replacing AI, say that AI usually complements rather than fully replaces search engines or human experts, and suggest verifying important information with reputable sources before acting.
 
 Return ONLY the JSON object described above. No extra text, no explanations, no Markdown.
+`.trim();
+
     // AbortController for hard timeout
     const controller = new AbortController();
     const timeout = setTimeout(
@@ -743,7 +683,7 @@ Return ONLY the JSON object described above. No extra text, no explanations, no 
         response_format: { type: "json_object" },
         temperature: 0.1,
         top_p: 0.8,
-        max_tokens: 900,
+        max_tokens: 700,
         messages: [
           { role: "system", content: systemPrompt },
           {
@@ -788,10 +728,10 @@ Return ONLY the JSON object described above. No extra text, no explanations, no 
     try {
       completion = await openaiRes.json();
     } catch (err) {
-      console.error(`[${reqId}] Error parsing OpenAI JSON:`, err);
+      console.error(`[${reqId}] Error parsing OpenAI JSON wrapper:`, err);
       const fallback = buildFallback(
         truncated,
-        "invalid JSON from OpenAI"
+        "invalid JSON from OpenAI wrapper"
       );
       const response = buildFinalResponse(fallback, {
         fallbackBaseQuestion: truncated,
@@ -807,28 +747,40 @@ Return ONLY the JSON object described above. No extra text, no explanations, no 
     const content =
       completion?.choices?.[0]?.message?.content || "{}";
 
-    let payload;
+    // Salvage parse: try raw, then slice between first/last brace
+    let payload = null;
     try {
       payload = JSON.parse(content);
     } catch (err) {
-      console.error(
-        `[${reqId}] JSON parse error from model content:`,
-        err,
-        content
-      );
-      const fallback = buildFallback(
-        truncated,
-        "invalid JSON from model"
-      );
-      const response = buildFinalResponse(fallback, {
-        fallbackBaseQuestion: truncated,
-        reqId,
-        startTime,
-        wasTruncated,
-        raw_input
-      });
-      res.status(200).json(response);
-      return;
+      try {
+        const firstBrace = content.indexOf("{");
+        const lastBrace = content.lastIndexOf("}");
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          const sliced = content.slice(firstBrace, lastBrace + 1);
+          payload = JSON.parse(sliced);
+        } else {
+          throw err;
+        }
+      } catch (err2) {
+        console.error(
+          `[${reqId}] JSON parse error from model content:`,
+          err2,
+          content
+        );
+        const fallback = buildFallback(
+          truncated,
+          "invalid JSON from model"
+        );
+        const response = buildFinalResponse(fallback, {
+          fallbackBaseQuestion: truncated,
+          reqId,
+          startTime,
+          wasTruncated,
+          raw_input
+        });
+        res.status(200).json(response);
+        return;
+      }
     }
 
     const response = buildFinalResponse(payload, {
