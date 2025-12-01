@@ -724,8 +724,9 @@ FIELD RULES (CAPSULE-FIRST)
 - Set to "inputcheck-v1.7.0".
 
 8) mini_answer
-- AI Overview–style answer, 2–5 sentences.
-- First sentence directly answers cleaned_question in neutral, factual tone.
+- 2–5 sentences that expand on answer_capsule_25w.
+- The FIRST SENTENCE must NOT be a copy-paste or near-verbatim repeat of answer_capsule_25w. It may paraphrase briefly, but should introduce at least one extra detail or nuance.
+- The remaining sentences should add examples, caveats, or simple next steps that a human reader would find helpful.
 - Avoid fluff; prefer concrete, entity-rich language.
 - Do NOT mention AI, JSON, prompts, or Input Check.
 
@@ -757,6 +758,7 @@ FIELD RULES (CAPSULE-FIRST)
 
 14) answer_capsule_25w (PRIMARY OUTPUT)
 - One sentence, about 20–25 words, that directly answers cleaned_question.
+- This is the “headline” answer and should stand alone if copied by itself.
 - Must be LINK-FREE (no URLs, no "click here").
 - Use clear, specific language (entities, actions, outcomes) suitable for AI overview snippets and quick human scanning.
 
