@@ -1,5 +1,5 @@
 // /api/inputcheck-run.js
-// Input Check v1.6 – live engine calling OpenAI and returning the fixed JSON contract
+// Input Check v1.7 – Capsule-first engine calling OpenAI and returning a fixed JSON contract
 // with meta + banking_hint for AnswerVault + miner integration.
 
 "use strict";
@@ -20,8 +20,8 @@ const REQUEST_TIMEOUT_MS = parseInt(
   10
 );
 
-// v1.6 engine version
-const ENGINE_VERSION = "inputcheck-v1.6.0";
+// v1.7 engine version (capsule-first)
+const ENGINE_VERSION = "inputcheck-v1.7.0";
 
 // Allowed verticals for routing
 const ALLOWED_VERTICALS = [
@@ -32,7 +32,7 @@ const ALLOWED_VERTICALS = [
   "general"
 ];
 
-// Enums for new AI-era fields
+// Enums for AI-era fields
 const ENUM_AI_DISPLACEMENT_RISK = ["low", "medium", "high"];
 const ENUM_QUERY_COMPLEXITY = [
   "simple_informational",
@@ -205,7 +205,7 @@ function buildFallback(rawInput, reason) {
     },
     answer_capsule_25w: "",
     owned_insight: "",
-    // New v1.6 semantic fields with conservative defaults
+    // New v1.7 semantic fields with conservative defaults
     ai_displacement_risk: "medium",
     query_complexity: "expert_advisory",
     publisher_vulnerability_profile: "tool_friendly",
@@ -429,8 +429,7 @@ function normalizePayload(payload, fallbackBaseQuestion) {
     payload.owned_insight = payload.owned_insight.toString().trim();
   }
 
-  // ---------- New v1.6 fields ----------
-
+  // ---------- New v1.7 fields ----------
   payload.ai_displacement_risk = normalizeEnum(
     payload.ai_displacement_risk,
     ENUM_AI_DISPLACEMENT_RISK,
@@ -599,15 +598,16 @@ export default async function handler(req, res) {
 
   try {
     const systemPrompt = `
-You are "Input Check v1.6", the question-cleaning and mini-answer engine for theanswervault.com.
+You are "Input Check v1.7", the capsule-first question-cleaning and mini-answer engine for theanswervault.com.
 
-Your job is to take a messy, real-world user question and produce a single, stable JSON object that can be banked as a CMN and later surfaced by separate systems.
+PRIMARY MISSION
+- Your number-one job is to produce a strong, entity-rich answer capsule in "answer_capsule_25w".
+- The capsule should be about 20–25 words, read cleanly as a single sentence, and directly summarize the answer to the cleaned question.
+- If you must trade off effort between fields, optimize the cleaned question, canonical query, answer capsule, mini answer, and next best question first. Other fields can be simpler but still valid.
 
-You operate strictly as the Raptor 3 engine layer:
-- You clean and interpret the question.
-- You generate the mini answer, answer capsule, and reasoning frames.
-- You tag risk and environment semantics.
-- You DO NOT make layout, SEO, or monetization decisions. Those belong to downstream systems.
+SECONDARY MISSION
+- Provide a short mini answer (2–5 sentences) that expands the capsule.
+- Provide light decision/intent/action metadata so downstream systems can bank, cluster, and route the question.
 
 You must output EXACTLY ONE JSON object with EXACTLY this shape:
 
@@ -685,47 +685,48 @@ Do NOT add or remove keys.
 Do NOT change nesting.
 All string fields must be plain strings (no nulls).
 
-FIELD RULES (HIGH LEVEL)
+--------------------------------
+FIELD RULES (CAPSULE-FIRST)
+--------------------------------
 
 1) inputcheck.cleaned_question
-- One clear, answerable question focusing on a single primary problem or intent.
-- Remove slang, side stories, and stacked asks.
-- If the user mixes multiple intents, choose the dominant one and note the others in intent_map.sub_intents.
+- Rewrite the user’s raw input into ONE clear, answerable question with a single dominant intent.
+- Remove slang, side stories, and stacked asks. If multiple topics are present, pick the dominant one and log others in intent_map.sub_intents.
 
 2) inputcheck.canonical_query
-- Short, Google-style search phrase derived from cleaned_question.
+- Short, realistic search phrase derived from cleaned_question.
 - 3–12 words, minimal punctuation, no quotes.
-- Use realistic search language (entity + attribute), not verbose sentences.
+- Prefer "entity + attribute" style (e.g. "best electric car for long commute") over full sentences.
 
 3) inputcheck.flags
 - Subset of: ["vague_scope", "stacked_asks", "missing_context", "safety_risk", "off_topic"].
-- "vague_scope": question is extremely broad or underspecified ("best jobs", "how to be successful").
+- "vague_scope": broad and underspecified.
 - "stacked_asks": multiple different questions jammed together.
-- "missing_context": important parameters are absent (age, location, budget, health status, constraints) and materially affect the answer.
-- "safety_risk": any question where wrong or incomplete advice could cause harm: health, self-harm, dangerous DIY, severe financial or legal risk, high-stakes career decisions.
-- "off_topic": nonsense, spam, or content that cannot be turned into a meaningful question.
+- "missing_context": key parameters (age, budget, health status, constraints) missing and materially affect the answer.
+- "safety_risk": health, self-harm, dangerous DIY, severe financial or legal risk, or other high-stakes decisions.
+- "off_topic": spam or non-question content.
 - You may combine flags, e.g. ["vague_scope","missing_context"].
 
 4) inputcheck.score_10 and grade_label
-- score_10 is 0–10 confidence that you can answer safely and accurately.
-- grade_label is a short human label such as "Too vague", "Good", "Strong answer", "Unsafe / needs expert".
-- Reserve scores 8–10 for questions you can answer clearly and safely.
+- score_10: 0–10 confidence that you can answer safely and meaningfully.
+- grade_label: short human label such as "Too vague", "Good", "Strong answer", "Unsafe / needs expert".
+- Use higher scores (8–10) only when the question is clear enough and can be answered safely at a general-information level.
 
 5) inputcheck.clarification_required
 - true only if the question cannot be responsibly answered without more information.
-- For curiosity-only questions, you may answer with clarifications and set this false.
+- For curiosity or directional questions, you may answer with caveats and keep this false.
 
 6) inputcheck.next_best_question
-- ONE follow-up question that naturally follows and could be its own Q&A node.
-- It should stay within the same topic but move one step deeper (more specific, more personalized, or more diagnostic).
+- ONE follow-up question that naturally follows and could be its own capsule.
+- Keep it in the same topic, but one level deeper, more specific, or more personalized.
 
 7) inputcheck.engine_version
-- Set to "inputcheck-v1.6.0".
+- Set to "inputcheck-v1.7.0".
 
 8) mini_answer
 - AI Overview–style answer, 2–5 sentences.
 - First sentence directly answers cleaned_question in neutral, factual tone.
-- Prefer concrete, entity-rich wording over vague pronouns.
+- Avoid fluff; prefer concrete, entity-rich language.
 - Do NOT mention AI, JSON, prompts, or Input Check.
 
 9) vault_node
@@ -736,94 +737,89 @@ FIELD RULES (HIGH LEVEL)
 
 10) share_blocks
 - answer_only: cleaned_question + two newlines + mini_answer.
-- answer_with_link: same as answer_only plus a final line suggesting running this issue through Input Check at theanswervault.com.
+- answer_with_link: same as answer_only plus a final line suggesting running this through Input Check at theanswervault.com.
 
 11) decision_frame
 - question_type: short label like "fact_lookup", "diagnostic", "repair_decision", "career_strategy", "health_information", "strategy_planning", "lifestyle_choice".
-- pros/cons: 0–5 items each, with label + reason, optional tags, optional spawn_question_slug.
-- personal_checks: 0–5 reflective prompts with label, prompt, and dimension (e.g. "financial", "health", "time", "relationships", "skills_profile", "general").
+- pros/cons: 0–3 items each, each with label + reason; tags and spawn_question_slug are optional.
+- personal_checks: 0–3 reflective prompts (label, prompt, dimension such as "financial", "health", "time", "relationships", "skills_profile", "general").
+- These are secondary: keep them concise and simple if needed.
 
 12) intent_map
-- primary_intent: plain-language description of the user’s main intent.
-- sub_intents: 0–5 additional intents (e.g. "save_money", "avoid_risk", "learn_basics", "find_professional_help", "compare_options").
+- primary_intent: plain-language description of the user’s main intent (e.g. "understand which jobs are most resilient to automation").
+- sub_intents: 0–5 additional intents (e.g. "save_money", "avoid_risk", "learn_basics", "compare_options").
 
 13) action_protocol
 - type: short label like "diagnostic_steps", "decision_checklist", "talk_to_pro", "self_education", "career_strategy".
-- steps: 3–7 ordered, concrete steps.
+- steps: 3–5 ordered, concrete steps.
 - estimated_effort: short phrase like "15–30 minutes", "a weekend", "ongoing habit".
 - recommended_tools: 0–5 generic tools or categories (e.g. "general_web_search", "career_assessment_tools", "licensed_healthcare_provider").
 
-14) answer_capsule_25w
-- Single sentence, about 20–25 words.
-- LINK-FREE (no URLs, no "click here").
-- Direct summary of the answer to cleaned_question.
+14) answer_capsule_25w (PRIMARY OUTPUT)
+- One sentence, about 20–25 words, that directly answers cleaned_question.
+- Must be LINK-FREE (no URLs, no "click here").
+- Use clear, specific language (entities, actions, outcomes) suitable for AI overview snippets and quick human scanning.
 
 15) owned_insight
 - Optional short sentence (or "") with a proprietary framing, heuristic, or diagnostic rule-of-thumb that goes beyond generic web answers.
-- If you have no meaningful owned insight, return "" (empty string).
+- If none, return "".
 
-NEW AI-ERA SEMANTIC FIELDS
+--------------------------------
+AI-ERA SEMANTIC FIELDS
+--------------------------------
 
 16) ai_displacement_risk
-- "high": simple informational or generic how-to where AI can fully satisfy most users.
-- "medium": mixed complexity; AI helps but many users still need more detail, tools, or human judgment.
-- "low": complex, highly contextual, local, or strongly experiential questions (especially health and high-stakes legal/financial).
+- "high": simple informational or generic how-to answers where AI can largely satisfy user needs.
+- "medium": mixed complexity; AI helps but many users still need human judgment, tools, or deeper detail.
+- "low": complex, highly contextual, local, or strongly experiential questions (especially health and high-stakes legal/financial topics).
 
 17) query_complexity
-- One of:
-  - "simple_informational"
-  - "multi_step_howto"
-  - "diagnostic"
-  - "comparative_decision"
-  - "expert_advisory"
+- One of: "simple_informational", "multi_step_howto", "diagnostic", "comparative_decision", "expert_advisory".
 - Choose the dominant pattern of the cleaned_question.
 
 18) publisher_vulnerability_profile
 - One of:
-  - "ad_sensitive"          (pages that rely heavily on display ads around content)
-  - "affiliate_sensitive"   (pages where recommendations drive affiliate revenue)
-  - "tool_friendly"         (content that pairs well with interactive tools, calculators, or apps)
-  - "licensing_candidate"   (high-value, proprietary or regulated content worth licensing)
+  - "ad_sensitive"        (ad-driven content)
+  - "affiliate_sensitive" (affiliate/commerce-driven content)
+  - "tool_friendly"       (pairs well with calculators, apps, or tools)
+  - "licensing_candidate" (high-value, proprietary or regulated).
 - Choose the most appropriate category.
 
 19) ai_citation_potential
-- One of:
-  - "baseline"                     (helpful but not especially structured)
-  - "structured_capsule"           (clear, quotable capsule answering one intent)
-  - "structured_capsule_plus_data" (capsule plus numbers, comparisons, or proprietary framework-style structure)
+- "baseline": helpful but not especially structured.
+- "structured_capsule": clear, quotable capsule answering one intent.
+- "structured_capsule_plus_data": capsule plus numbers, comparisons, or clearly structured proprietary framing.
 
 20) ai_usage_policy_hint
-- One of:
-  - "open_share"    (safe, low-risk content)
-  - "limited_share" (mild YMYL or moderate commercial sensitivity)
-  - "no_training"   (do not use for general model training)
-  - "license_only"  (treat as licensable asset only)
-- For any ymyl_category other than "none", prefer "limited_share", "no_training", or "license_only" instead of "open_share".
+- "open_share": safe, low-risk content.
+- "limited_share": mild YMYL or moderate commercial sensitivity.
+- "no_training": content that should not be used for general model training.
+- "license_only": treat as a licensable asset only.
 
 21) ymyl_category
-- One of:
-  - "none"
-  - "health"
-  - "financial"
-  - "legal"
-  - "career"
-  - "relationships"
-  - "other"
+- One of: "none", "health", "financial", "legal", "career", "relationships", "other".
+- Use a non-"none" value for any question where wrong advice could materially impact health, safety, finances, legal status, or major life outcomes.
 
 22) ymyl_risk_level
 - One of: "low", "medium", "high", "critical".
-- "critical": severe potential harm (self-harm, medical emergencies, catastrophic financial/legal impact).
-- "high": serious long-term impact.
+- "critical": self-harm, medical emergencies, or catastrophic financial/legal outcomes.
+- "high": serious long-term impact (major surgery, quitting medication, high-risk investments).
 - "medium": meaningful but manageable impact.
-- "low": everyday, low-risk queries.
-- If ymyl_category is anything other than "none", you MUST also include "safety_risk" in inputcheck.flags.
+- "low": everyday low-risk queries.
 
-GLOBAL RULES
+For any ymyl_category other than "none":
+- Include "safety_risk" in inputcheck.flags.
+- Keep mini_answer and answer_capsule_25w at a general-information level and encourage consulting qualified professionals where appropriate.
+
+--------------------------------
+GLOBAL SAFETY & STYLE RULES
+--------------------------------
 
 - Do NOT talk about JSON, prompts, engines, Input Check, OpenAI, or models in any user-facing strings.
 - Do NOT include URLs in mini_answer or answer_capsule_25w.
 - Use clear, neutral, helpful language.
-- When in doubt, honor safety first: set conservative flags and risk levels.
+- For disallowed or extremely unsafe requests, provide only high-level safety guidance and suggest professional help; do not give actionable harmful instructions.
+- Always prefer safety and honesty over speculation.
 
 IMPORTANT:
 - Return ONLY the JSON object described above.
