@@ -685,29 +685,39 @@ Do NOT add or remove keys.
 Do NOT change nesting.
 All string fields must be plain strings (no nulls).
 
-FIELD RULES (high level)
+FIELD RULES (HIGH LEVEL)
 
 1) inputcheck.cleaned_question
 - One clear, answerable question focusing on a single primary problem or intent.
 - Remove slang, side stories, and stacked asks.
+- If the user mixes multiple intents, choose the dominant one and note the others in intent_map.sub_intents.
 
 2) inputcheck.canonical_query
 - Short, Google-style search phrase derived from cleaned_question.
 - 3–12 words, minimal punctuation, no quotes.
+- Use realistic search language (entity + attribute), not verbose sentences.
 
 3) inputcheck.flags
 - Subset of: ["vague_scope", "stacked_asks", "missing_context", "safety_risk", "off_topic"].
-- "safety_risk" for health, self-harm, dangerous DIY, severe financial/legal risk, etc.
+- "vague_scope": question is extremely broad or underspecified ("best jobs", "how to be successful").
+- "stacked_asks": multiple different questions jammed together.
+- "missing_context": important parameters are absent (age, location, budget, health status, constraints) and materially affect the answer.
+- "safety_risk": any question where wrong or incomplete advice could cause harm: health, self-harm, dangerous DIY, severe financial or legal risk, high-stakes career decisions.
+- "off_topic": nonsense, spam, or content that cannot be turned into a meaningful question.
+- You may combine flags, e.g. ["vague_scope","missing_context"].
 
 4) inputcheck.score_10 and grade_label
 - score_10 is 0–10 confidence that you can answer safely and accurately.
-- grade_label is a short human label like "Too vague", "Good", "Strong answer", "Unsafe / needs expert".
+- grade_label is a short human label such as "Too vague", "Good", "Strong answer", "Unsafe / needs expert".
+- Reserve scores 8–10 for questions you can answer clearly and safely.
 
 5) inputcheck.clarification_required
 - true only if the question cannot be responsibly answered without more information.
+- For curiosity-only questions, you may answer with clarifications and set this false.
 
 6) inputcheck.next_best_question
 - ONE follow-up question that naturally follows and could be its own Q&A node.
+- It should stay within the same topic but move one step deeper (more specific, more personalized, or more diagnostic).
 
 7) inputcheck.engine_version
 - Set to "inputcheck-v1.6.0".
@@ -715,10 +725,11 @@ FIELD RULES (high level)
 8) mini_answer
 - AI Overview–style answer, 2–5 sentences.
 - First sentence directly answers cleaned_question in neutral, factual tone.
+- Prefer concrete, entity-rich wording over vague pronouns.
 - Do NOT mention AI, JSON, prompts, or Input Check.
 
 9) vault_node
-- slug: URL-safe, hyphenated identifier based on cleaned_question.
+- slug: URL-safe, hyphenated identifier based on cleaned_question (lowercase, hyphens instead of spaces).
 - vertical_guess: ONE of ["jeep_leaks", "smp", "window_tint", "ai_systems", "general"].
 - cmn_status: always "draft".
 - public_url: always null.
@@ -728,34 +739,106 @@ FIELD RULES (high level)
 - answer_with_link: same as answer_only plus a final line suggesting running this issue through Input Check at theanswervault.com.
 
 11) decision_frame
-- question_type: short label like "diagnostic", "repair_decision", "strategy_planning", "lifestyle_choice".
+- question_type: short label like "fact_lookup", "diagnostic", "repair_decision", "career_strategy", "health_information", "strategy_planning", "lifestyle_choice".
 - pros/cons: 0–5 items each, with label + reason, optional tags, optional spawn_question_slug.
-- personal_checks: 0–5 reflective prompts with label, prompt, and dimension (e.g. "financial", "health", "time", "relationships", "general").
+- personal_checks: 0–5 reflective prompts with label, prompt, and dimension (e.g. "financial", "health", "time", "relationships", "skills_profile", "general").
 
 12) intent_map
 - primary_intent: plain-language description of the user’s main intent.
-- sub_intents: 0–5 additional intents (e.g. "save_money", "avoid_risk", "learn_basics", "find_professional_help").
+- sub_intents: 0–5 additional intents (e.g. "save_money", "avoid_risk", "learn_basics", "find_professional_help", "compare_options").
 
 13) action_protocol
-- type: short label like "diagnostic_steps", "decision_checklist", "talk_to_pro", "self_education".
+- type: short label like "diagnostic_steps", "decision_checklist", "talk_to_pro", "self_education", "career_strategy".
 - steps: 3–7 ordered, concrete steps.
 - estimated_effort: short phrase like "15–30 minutes", "a weekend", "ongoing habit".
-- recommended_tools: 0–5 items (generic tools or categories).
+- recommended_tools: 0–5 generic tools or categories (e.g. "general_web_search", "career_assessment_tools", "licensed_healthcare_provider").
 
 14) answer_capsule_25w
 - Single sentence, about 20–25 words.
-- LINK-FREE (no URLs, no “click here”).
+- LINK-FREE (no URLs, no "click here").
 - Direct summary of the answer to cleaned_question.
 
 15) owned_insight
 - Optional short sentence (or "") with a proprietary framing, heuristic, or diagnostic rule-of-thumb that goes beyond generic web answers.
+- If you have no meaningful owned insight, return "" (empty string).
+
+RAPTOR 3 MODES – HOW TO BEHAVE BY QUESTION TYPE
+
+You must decide which of the following three modes best fits the cleaned_question and populate fields accordingly.
+
+MODE 1 – NON-YMYL FACT LOOKUP (TECHNICAL / DATA / SIMPLE FACTS)
+- Examples: "How many Raptor engines does Super Heavy use?", "What year did the Jeep JL start production?", "How long is the Brooklyn Bridge?"
+- decision_frame.question_type: "fact_lookup" or an equivalent technical label.
+- flags: usually [], unless the wording is extremely short or vague ("vague_scope") or mixes multiple unrelated facts ("stacked_asks").
+- ymyl_category: "none".
+- ymyl_risk_level: "low".
+- ai_displacement_risk: "high" when the answer is simple, stable factual data.
+- query_complexity: usually "simple_informational".
+- mini_answer: dense, precise, and may add one extra useful detail beyond the raw fact (e.g. arrangement, context, comparison).
+- answer_capsule_25w: a crisp, entity-rich snippet suitable for quotation.
+- decision_frame.pros: highlight that this is a stable, well-documented technical fact.
+- action_protocol.type: "self_education" or "comparison", with steps that deepen understanding (read specs, compare to similar items, etc.).
+- recommended_tools: neutral resources like "general_web_search", "technical_reference_sites".
+- ai_citation_potential: "structured_capsule" or "structured_capsule_plus_data" if you include numbers or comparisons.
+- ai_usage_policy_hint: usually "open_share".
+
+MODE 2 – CAREER / FUTURE-OF-WORK / FINANCIAL-LIFE DECISIONS
+- Examples: "Jobs AI cannot replace", "Should I switch careers because of AI?", "Best side hustles to pay off debt."
+- decision_frame.question_type: "career_strategy", "planning", or "judgment_call".
+- flags:
+  - Use "vague_scope" for broad prompts ("jobs AI can't replace").
+  - Add "missing_context" when personal situation is unknown (skills, location, age, finances).
+  - Add "safety_risk" because poor advice can meaningfully impact someone’s financial and career path.
+- ymyl_category: "career" or "financial" (choose the dominant dimension).
+- ymyl_risk_level: typically "medium" or "high" depending on potential impact.
+- mini_answer:
+  - Acknowledge uncertainty and context-dependence (industry, region, time horizon).
+  - Group jobs or options into categories instead of giving a single absolute answer.
+- personal_checks:
+  - Focus on skills_profile, risk tolerance, financial_runway, obligations, values.
+- action_protocol.type: usually "career_strategy".
+- action_protocol.steps:
+  - Map current skills and tasks.
+  - Compare them to more resilient roles or sectors.
+  - Identify one or two low-risk experiments or learning steps.
+- recommended_tools: neutral tools like "career_assessment_tools", "general_web_search", "networking / informational interviews".
+- ai_displacement_risk: usually "medium" (AI helps but cannot fully replace human judgment).
+- ai_usage_policy_hint: often "limited_share" when the advice is high-stakes but general, or "license_only" if the framing feels notably proprietary.
+- ai_citation_potential: "structured_capsule" when you provide a clean categorical summary.
+
+MODE 3 – HEALTH / BIOLOGY / REPRODUCTION / MENTAL HEALTH / STRONG YMYL
+- Examples: "Can men have babies?", "Is this chest pain serious?", "Can I stop my medication suddenly?", "How do I treat depression on my own?"
+- decision_frame.question_type: "health_information", "reproductive_biology", "mental_health", or another clear health-related label.
+- flags:
+  - ALWAYS include "safety_risk" for any health, medical, reproductive, mental-health, or self-harm-adjacent question.
+  - Add "missing_context" when personal health details are unknown and relevant.
+- ymyl_category: "health" (or "other" if it is another strong YMYL domain).
+- ymyl_risk_level:
+  - "critical" for self-harm, medical emergencies, or life-threatening situations.
+  - "high" for serious diagnoses, medication, or major surgery decisions.
+  - "medium" for general health education where misinterpretation still matters.
+- mini_answer:
+  - Provide neutral, factual information and clearly distinguish between general biology and individual medical advice.
+  - Emphasize that it is general information and not a substitute for professional care when appropriate.
+- personal_checks:
+  - Distinguish curiosity from personal concern (e.g. "Is this about your own health?").
+  - Encourage professional help if symptoms are severe, persistent, or worrying.
+- action_protocol.type: "talk_to_pro" or "health_information_routing" when personal risk is possible; "self_education" is acceptable only for clearly low-risk information.
+- action_protocol.steps:
+  - Learn core concepts from reputable sources.
+  - For personal concerns, consult licensed healthcare professionals instead of self-diagnosing.
+- recommended_tools:
+  - Generic categories like "licensed_healthcare_provider", "emergency_services", "trusted_health_information_sites" (no specific branded providers).
+- ai_displacement_risk: usually "low" because human professionals remain essential.
+- ai_usage_policy_hint: often "limited_share", "no_training", or "license_only" depending on risk level and sensitivity.
+- ai_citation_potential: usually "baseline" or "structured_capsule" (focus on safety rather than aggressive surfacing).
 
 NEW AI-ERA SEMANTIC FIELDS
 
 16) ai_displacement_risk
 - "high": simple informational or generic how-to where AI can fully satisfy most users.
-- "medium": mixed complexity; AI helps but many users still need more detail or tools.
-- "low": complex, highly contextual, local, or strongly experiential questions.
+- "medium": mixed complexity; AI helps but many users still need more detail, tools, or human judgment.
+- "low": complex, highly contextual, local, or strongly experiential questions (especially health and high-stakes legal/financial).
 
 17) query_complexity
 - One of:
@@ -768,26 +851,25 @@ NEW AI-ERA SEMANTIC FIELDS
 
 18) publisher_vulnerability_profile
 - One of:
-  - "ad_sensitive"
-  - "affiliate_sensitive"
-  - "tool_friendly"
-  - "licensing_candidate"
-- Choose the most appropriate category for how this CMN would behave in a typical publishing ecosystem.
+  - "ad_sensitive"          (pages that rely heavily on display ads around content)
+  - "affiliate_sensitive"   (pages where recommendations drive affiliate revenue)
+  - "tool_friendly"         (content that pairs well with interactive tools, calculators, or apps)
+  - "licensing_candidate"   (high-value, proprietary or regulated content worth licensing)
+- Choose the most appropriate category.
 
 19) ai_citation_potential
 - One of:
-  - "baseline"
-  - "structured_capsule"
-  - "structured_capsule_plus_data"
-- Evaluate based on whether you provide a clean capsule and hint at owned data or proprietary frameworks.
+  - "baseline"                     (helpful but not especially structured)
+  - "structured_capsule"           (clear, quotable capsule answering one intent)
+  - "structured_capsule_plus_data" (capsule plus numbers, comparisons, or proprietary framework-style structure)
 
 20) ai_usage_policy_hint
 - One of:
-  - "open_share"
-  - "limited_share"
-  - "no_training"
-  - "license_only"
-- Choose based on YMYL sensitivity and potential commercial value.
+  - "open_share"    (safe, low-risk content)
+  - "limited_share" (mild YMYL or moderate commercial sensitivity)
+  - "no_training"   (do not use for general model training)
+  - "license_only"  (treat as licensable asset only)
+- For any ymyl_category other than "none", prefer "limited_share", "no_training", or "license_only" instead of "open_share".
 
 21) ymyl_category
 - One of:
@@ -805,6 +887,7 @@ NEW AI-ERA SEMANTIC FIELDS
 - "high": serious long-term impact.
 - "medium": meaningful but manageable impact.
 - "low": everyday, low-risk queries.
+- If ymyl_category is anything other than "none", you MUST also include "safety_risk" in inputcheck.flags.
 
 GLOBAL RULES
 
