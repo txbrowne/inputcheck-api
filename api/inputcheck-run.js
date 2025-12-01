@@ -496,8 +496,14 @@ function buildBankingHint(ic) {
 
 // Build final response with meta + banking_hint
 function buildFinalResponse(payload, opts) {
-  const { fallbackBaseQuestion, reqId, startTime, wasTruncated, raw_input } =
-    opts || {};
+  const {
+    fallbackBaseQuestion,
+    reqId,
+    startTime,
+    wasTruncated,
+    raw_input,
+    error_reason
+  } = opts || {};
 
   const normalized = normalizePayload(payload, fallbackBaseQuestion || "");
 
@@ -520,7 +526,8 @@ function buildFinalResponse(payload, opts) {
     processing_time_ms,
     was_truncated: Boolean(wasTruncated),
     input_length_chars:
-      typeof raw_input === "string" ? raw_input.length : null
+      typeof raw_input === "string" ? raw_input.length : null,
+    error_reason: error_reason || null
   };
 
   return {
@@ -551,13 +558,15 @@ export default async function handler(req, res) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     console.error("[" + reqId + "] Missing OPENAI_API_KEY");
-    const fallback = buildFallback("", "missing OPENAI_API_KEY on server");
+    const reason = "missing OPENAI_API_KEY on server";
+    const fallback = buildFallback("", reason);
     const response = buildFinalResponse(fallback, {
       fallbackBaseQuestion: "",
       reqId,
       startTime,
       wasTruncated: false,
-      raw_input: ""
+      raw_input: "",
+      error_reason: reason
     });
     res.status(200).json(response);
     return;
@@ -589,7 +598,7 @@ export default async function handler(req, res) {
   }
 
   try {
-const systemPrompt = `
+    const systemPrompt = `
 You are "Input Check v1.7", the capsule-first question-cleaning and mini-answer engine for theanswervault.com.
 
 Your output is consumed by:
@@ -855,8 +864,8 @@ GLOBAL STYLE & SAFETY
 - Use clear, neutral, helpful language that matches the tone of high-quality Google AI Overview answers.
 - Prefer concise, entity-rich sentences over vague or overly hedged language.
 - For disallowed or extremely unsafe requests, provide only high-level safety guidance and recommend professional help; do not give actionable harmful instructions.
-
 `.trim();
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -893,14 +902,16 @@ GLOBAL STYLE & SAFETY
 
     if (!openaiRes.ok) {
       const text = await openaiRes.text();
+      const reason = "OpenAI HTTP " + openaiRes.status;
       console.error("[" + reqId + "] OpenAI error " + openaiRes.status + ":", text);
-      const fallback = buildFallback(truncated, "OpenAI HTTP " + openaiRes.status);
+      const fallback = buildFallback(truncated, reason);
       const response = buildFinalResponse(fallback, {
         fallbackBaseQuestion: truncated,
         reqId,
         startTime,
         wasTruncated,
-        raw_input
+        raw_input,
+        error_reason: reason
       });
       res.status(200).json(response);
       return;
@@ -910,14 +921,16 @@ GLOBAL STYLE & SAFETY
     try {
       completion = await openaiRes.json();
     } catch (err) {
+      const reason = "invalid JSON from OpenAI";
       console.error("[" + reqId + "] Error parsing OpenAI JSON:", err);
-      const fallback = buildFallback(truncated, "invalid JSON from OpenAI");
+      const fallback = buildFallback(truncated, reason);
       const response = buildFinalResponse(fallback, {
         fallbackBaseQuestion: truncated,
         reqId,
         startTime,
         wasTruncated,
-        raw_input
+        raw_input,
+        error_reason: reason
       });
       res.status(200).json(response);
       return;
@@ -936,18 +949,20 @@ GLOBAL STYLE & SAFETY
     try {
       payload = JSON.parse(content);
     } catch (err) {
+      const reason = "invalid JSON from model";
       console.error(
         "[" + reqId + "] JSON parse error from model content:",
         err,
         content
       );
-      const fallback = buildFallback(truncated, "invalid JSON from model");
+      const fallback = buildFallback(truncated, reason);
       const response = buildFinalResponse(fallback, {
         fallbackBaseQuestion: truncated,
         reqId,
         startTime,
         wasTruncated,
-        raw_input
+        raw_input,
+        error_reason: reason
       });
       res.status(200).json(response);
       return;
@@ -958,7 +973,8 @@ GLOBAL STYLE & SAFETY
       reqId,
       startTime,
       wasTruncated,
-      raw_input
+      raw_input,
+      error_reason: null
     });
 
     res.status(200).json(response);
@@ -975,7 +991,8 @@ GLOBAL STYLE & SAFETY
       reqId,
       startTime,
       wasTruncated,
-      raw_input
+      raw_input,
+      error_reason: reason
     });
     res.status(200).json(response);
   }
