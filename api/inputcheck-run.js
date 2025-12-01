@@ -1,6 +1,5 @@
-// api/inputcheck-run.js
-// Input Check Raptor-3 – capsule-first engine calling OpenAI and returning the fixed JSON contract
-// with meta + banking_hint for AnswerVault + miner integration.
+// api/query-condense.js
+// Query Condenser v1 – turns messy natural language into a short Google-style query.
 
 "use strict";
 
@@ -8,22 +7,20 @@
 // Config
 // ----------------------------
 const OPENAI_MODEL =
-  process.env.INPUTCHECK_MODEL || "gpt-4.1-mini";
+  process.env.QUERYCONDENSE_MODEL || "gpt-4.1-mini";
 const OPENAI_API_URL =
   process.env.OPENAI_API_URL || "https://api.openai.com/v1/chat/completions";
 
-// Hard guardrails
-const INPUTCHECK_MAX_CHARS = parseInt(
-  process.env.INPUTCHECK_MAX_CHARS || "2000",
+const INPUT_MAX_CHARS = parseInt(
+  process.env.QUERYCONDENSE_MAX_CHARS || "2000",
   10
 );
 const REQUEST_TIMEOUT_MS = parseInt(
-  process.env.INPUTCHECK_TIMEOUT_MS || "20000",
+  process.env.QUERYCONDENSE_TIMEOUT_MS || "15000",
   10
 );
 
-// Raptor-3 engine version
-const ENGINE_VERSION = "inputcheck-raptor-3.0.0";
+const ENGINE_VERSION = "query-condenser-v1.0.0";
 
 // ----------------------------
 // Helpers
@@ -35,406 +32,56 @@ function setCorsHeaders(res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-// Build a safe fallback payload if OpenAI fails or we hit an internal error
-function buildFallback(rawInput, reason) {
-  const safeInput = (rawInput || "").toString().trim();
-  const cleaned = safeInput || "";
-
-  const mini =
-    "Input Check couldn’t reach the engine right now (" +
-    reason +
-    "). Please try again shortly.";
-
-  const baseText = cleaned + (cleaned ? "\n\n" : "") + mini;
-
-  return {
-    inputcheck: {
-      cleaned_question: cleaned,
-      canonical_query: cleaned, // fallback: mirror cleaned_question
-      flags: ["backend_error"],
-      score_10: 0,
-      grade_label: "Engine unavailable",
-      clarification_required: false,
-      next_best_question:
-        "Try your question again in a moment — the engine had a connection issue.",
-      engine_version: ENGINE_VERSION,
-      backend_error: true
-    },
-    mini_answer: mini,
-    vault_node: {
-      slug: "inputcheck-backend-error",
-      vertical_guess: "general",
-      cmn_status: "draft",
-      public_url: null
-    },
-    share_blocks: {
-      answer_only: baseText,
-      answer_with_link:
-        baseText +
-        "\n\nRun this through Input Check at https://theanswervault.com/"
-    },
-    decision_frame: {
-      question_type: "unknown",
-      pros: [],
-      cons: [],
-      personal_checks: []
-    },
-    intent_map: {
-      primary_intent: cleaned,
-      sub_intents: []
-    },
-    action_protocol: {
-      type: "none",
-      steps: [],
-      estimated_effort: "",
-      recommended_tools: []
-    },
-    answer_capsule_25w: "",
-    owned_insight: ""
-  };
-}
-
-// Simple request ID for logging
 function makeRequestId() {
   return (
-    "ic_" +
+    "qc_" +
     Date.now().toString(36) +
     "_" +
     Math.random().toString(36).slice(2, 8)
   );
 }
 
-// Normalizers for decision_frame arrays
-function normalizeProConArray(arr) {
-  if (!Array.isArray(arr)) return [];
-  return arr.map((item) => {
-    if (typeof item === "string") {
-      const txt = item.toString().trim();
-      return {
-        label: txt,
-        reason: txt,
-        tags: [],
-        spawn_question_slug: ""
-      };
-    }
+// Simple fallback condenser if OpenAI fails
+function buildFallback(rawInput, reason) {
+  const safeInput = (rawInput || "").toString().trim();
+
+  if (!safeInput) {
     return {
-      label: (item.label || "").toString().trim(),
-      reason: (item.reason || "").toString().trim(),
-      tags: Array.isArray(item.tags) ? item.tags : [],
-      spawn_question_slug: (item.spawn_question_slug || "")
-        .toString()
-        .trim()
+      canonical_query: "",
+      meta: {
+        request_id: null,
+        engine_version: ENGINE_VERSION,
+        model: OPENAI_MODEL,
+        processing_time_ms: null,
+        input_length_chars: 0,
+        was_truncated: false,
+        backend_error: true,
+        reason: reason || "empty input"
+      }
     };
-  });
-}
-
-function normalizeChecksArray(arr) {
-  if (!Array.isArray(arr)) return [];
-  return arr.map((item) => {
-    if (typeof item === "string") {
-      const txt = item.toString().trim();
-      return {
-        label: txt,
-        prompt: txt,
-        dimension: "general"
-      };
-    }
-    return {
-      label: (item.label || "").toString().trim(),
-      prompt: (item.prompt || "").toString().trim(),
-      dimension: (item.dimension || "general").toString().trim()
-    };
-  });
-}
-
-// Ensure new blocks are always present and minimally sane
-function normalizePayload(payload, fallbackBaseQuestion) {
-  const baseQuestion = (fallbackBaseQuestion || "").toString();
-
-  if (!payload || typeof payload !== "object") {
-    return buildFallback(baseQuestion, "invalid payload shape");
   }
 
-  // ---------- inputcheck ----------
-  if (!payload.inputcheck || typeof payload.inputcheck !== "object") {
-    payload.inputcheck = {
-      cleaned_question: baseQuestion,
-      canonical_query: baseQuestion,
-      flags: ["backend_error"],
-      score_10: 0,
-      grade_label: "Engine unavailable",
-      clarification_required: false,
-      next_best_question:
-        "Try your question again in a moment — the engine returned an incomplete result.",
+  // naive normalization: lowercase, strip most punctuation, compress whitespace
+  const lower = safeInput.toLowerCase();
+  const stripped = lower.replace(/[^a-z0-9\s\?\-]/g, " ");
+  const words = stripped
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 12);
+  const canonical = words.join(" ");
+
+  return {
+    canonical_query: canonical,
+    meta: {
+      request_id: null,
       engine_version: ENGINE_VERSION,
-      backend_error: true
-    };
-  } else {
-    payload.inputcheck.cleaned_question =
-      (payload.inputcheck.cleaned_question || baseQuestion).toString();
-
-    // Ensure canonical_query exists and is a simple string
-    let cq = payload.inputcheck.canonical_query;
-    if (typeof cq !== "string" || !cq.trim()) {
-      cq = payload.inputcheck.cleaned_question || baseQuestion;
+      model: OPENAI_MODEL,
+      processing_time_ms: null,
+      input_length_chars: safeInput.length,
+      was_truncated: safeInput.length > INPUT_MAX_CHARS,
+      backend_error: true,
+      reason: reason || "fallback condenser used"
     }
-    payload.inputcheck.canonical_query = cq.toString().trim();
-
-    payload.inputcheck.flags = Array.isArray(payload.inputcheck.flags)
-      ? payload.inputcheck.flags
-      : [];
-
-    payload.inputcheck.score_10 =
-      typeof payload.inputcheck.score_10 === "number"
-        ? payload.inputcheck.score_10
-        : 0;
-
-    payload.inputcheck.grade_label =
-      (payload.inputcheck.grade_label || "ok").toString();
-
-    payload.inputcheck.clarification_required = Boolean(
-      payload.inputcheck.clarification_required
-    );
-
-    payload.inputcheck.next_best_question =
-      (payload.inputcheck.next_best_question || "").toString();
-
-    payload.inputcheck.engine_version =
-      (payload.inputcheck.engine_version || ENGINE_VERSION).toString();
-
-    // Explicit backend_error boolean for banking/miner logic
-    if (typeof payload.inputcheck.backend_error !== "boolean") {
-      payload.inputcheck.backend_error = false;
-    }
-  }
-
-  // ---------- mini_answer ----------
-  if (typeof payload.mini_answer !== "string") {
-    payload.mini_answer =
-      "No mini answer available due to an engine error. Please run this question again.";
-  }
-
-  // ---------- vault_node ----------
-  if (!payload.vault_node || typeof payload.vault_node !== "object") {
-    payload.vault_node = {
-      slug: "inputcheck-fallback",
-      vertical_guess: "general",
-      cmn_status: "draft",
-      public_url: null
-    };
-  } else {
-    payload.vault_node.slug =
-      (payload.vault_node.slug || "inputcheck-fallback").toString();
-    payload.vault_node.vertical_guess =
-      (payload.vault_node.vertical_guess || "general").toString();
-    payload.vault_node.cmn_status =
-      (payload.vault_node.cmn_status || "draft").toString();
-    if (
-      typeof payload.vault_node.public_url !== "string" &&
-      payload.vault_node.public_url !== null
-    ) {
-      payload.vault_node.public_url = null;
-    }
-  }
-
-  // ---------- share_blocks ----------
-  if (!payload.share_blocks || typeof payload.share_blocks !== "object") {
-    const baseText =
-      payload.inputcheck.cleaned_question +
-      "\n\n" +
-      payload.mini_answer;
-    payload.share_blocks = {
-      answer_only: baseText,
-      answer_with_link:
-        baseText +
-        "\n\nRun this through Input Check at https://theanswervault.com/"
-    };
-  } else {
-    const cqText = payload.inputcheck.cleaned_question;
-    const ma = payload.mini_answer;
-    const defaultBase = cqText + "\n\n" + ma;
-
-    payload.share_blocks.answer_only =
-      (payload.share_blocks.answer_only || defaultBase).toString();
-
-    payload.share_blocks.answer_with_link =
-      (payload.share_blocks.answer_with_link ||
-        defaultBase +
-          "\n\nRun this through Input Check at https://theanswervault.com/").toString();
-  }
-
-  // ---------- decision_frame ----------
-  if (!payload.decision_frame || typeof payload.decision_frame !== "object") {
-    payload.decision_frame = {
-      question_type: "unknown",
-      pros: [],
-      cons: [],
-      personal_checks: []
-    };
-  } else {
-    payload.decision_frame.question_type =
-      (payload.decision_frame.question_type || "unknown").toString();
-
-    payload.decision_frame.pros = normalizeProConArray(
-      payload.decision_frame.pros
-    );
-
-    payload.decision_frame.cons = normalizeProConArray(
-      payload.decision_frame.cons
-    );
-
-    payload.decision_frame.personal_checks = normalizeChecksArray(
-      payload.decision_frame.personal_checks
-    );
-  }
-
-  // ---------- intent_map ----------
-  if (!payload.intent_map || typeof payload.intent_map !== "object") {
-    payload.intent_map = {
-      primary_intent: payload.inputcheck.cleaned_question || baseQuestion,
-      sub_intents: []
-    };
-  } else {
-    payload.intent_map.primary_intent =
-      (payload.intent_map.primary_intent ||
-        payload.inputcheck.cleaned_question ||
-        baseQuestion ||
-        "").toString();
-    payload.intent_map.sub_intents = Array.isArray(
-      payload.intent_map.sub_intents
-    )
-      ? payload.intent_map.sub_intents
-      : [];
-  }
-
-  // ---------- action_protocol ----------
-  if (!payload.action_protocol || typeof payload.action_protocol !== "object") {
-    payload.action_protocol = {
-      type: "none",
-      steps: [],
-      estimated_effort: "",
-      recommended_tools: []
-    };
-  } else {
-    payload.action_protocol.type =
-      (payload.action_protocol.type || "none").toString();
-    payload.action_protocol.steps = Array.isArray(
-      payload.action_protocol.steps
-    )
-      ? payload.action_protocol.steps
-      : [];
-    payload.action_protocol.estimated_effort =
-      (payload.action_protocol.estimated_effort || "").toString();
-    payload.action_protocol.recommended_tools = Array.isArray(
-      payload.action_protocol.recommended_tools
-    )
-      ? payload.action_protocol.recommended_tools
-      : [];
-  }
-
-  // ---------- answer_capsule_25w ----------
-  if (typeof payload.answer_capsule_25w !== "string") {
-    // Simple default: first ~25 words of mini_answer, or cleaned_question
-    const source =
-      typeof payload.mini_answer === "string" &&
-      payload.mini_answer.trim().length > 0
-        ? payload.mini_answer.trim()
-        : payload.inputcheck.cleaned_question || baseQuestion;
-
-    const words = source.split(/\s+/).slice(0, 25);
-    payload.answer_capsule_25w = words.join(" ");
-  } else {
-    payload.answer_capsule_25w = payload.answer_capsule_25w.toString().trim();
-  }
-
-  // ---------- owned_insight ----------
-  if (typeof payload.owned_insight !== "string") {
-    payload.owned_insight = "";
-  } else {
-    payload.owned_insight = payload.owned_insight.toString().trim();
-  }
-
-  return payload;
-}
-
-// Banking hint helper for Vault Banking API / headless miner
-function buildBankingHint(ic) {
-  const flags = Array.isArray(ic.flags) ? ic.flags : [];
-  const backendError = Boolean(ic.backend_error);
-  const hasOffTopic = flags.includes("off_topic");
-
-  // Hard flags: safety or engine-level problems or clearly off-topic
-  const hardFlags = new Set(["safety_risk"]);
-  const hardHit =
-    backendError ||
-    hasOffTopic ||
-    flags.some((f) => hardFlags.has(f));
-
-  const score = typeof ic.score_10 === "number" ? ic.score_10 : 0;
-
-  let confidence_bucket = "low";
-  if (score >= 8) confidence_bucket = "high";
-  else if (score >= 6) confidence_bucket = "medium";
-
-  let recommended_status = "draft";
-  if (!hardHit && score >= 8) recommended_status = "queued";
-
-  return {
-    recommended_status,           // draft / queued (advisory)
-    confidence_bucket,            // high / medium / low
-    auto_bank_recommended: !hardHit && score >= 7,
-    reason: hardHit
-      ? "Hard flag present (safety_risk, backend_error, or off_topic)."
-      : `Score ${score}/10 with flags: ${flags.join(", ") || "none"}.`
-  };
-}
-
-// Build final response with meta + banking_hint
-function buildFinalResponse(payload, opts) {
-  const { fallbackBaseQuestion, reqId, startTime, wasTruncated, raw_input } =
-    opts || {};
-
-  const normalized = normalizePayload(payload, fallbackBaseQuestion || "");
-
-  // If input was truncated, add a flag so miners/banker can be cautious
-  if (wasTruncated) {
-    normalized.inputcheck.flags = normalized.inputcheck.flags || [];
-    if (!normalized.inputcheck.flags.includes("truncated_input")) {
-      normalized.inputcheck.flags.push("truncated_input");
-    }
-  }
-
-  const banking_hint = buildBankingHint(normalized.inputcheck);
-
-  const processing_time_ms =
-    typeof startTime === "number" ? Date.now() - startTime : null;
-
-  const ic = normalized.inputcheck || {};
-  const questionType =
-    normalized.decision_frame &&
-    typeof normalized.decision_frame.question_type === "string"
-      ? normalized.decision_frame.question_type
-      : "unknown";
-
-  const meta = {
-    request_id: reqId || null,
-    engine_version: ENGINE_VERSION,
-    model: OPENAI_MODEL,
-    processing_time_ms,
-    was_truncated: Boolean(wasTruncated),
-    input_length_chars:
-      typeof raw_input === "string" ? raw_input.length : null,
-    score_10:
-      typeof ic.score_10 === "number" ? ic.score_10 : null,
-    flags: Array.isArray(ic.flags) ? ic.flags : [],
-    question_type: questionType,
-    backend_error: Boolean(ic.backend_error)
-  };
-
-  return {
-    ...normalized,
-    banking_hint,
-    meta
   };
 }
 
@@ -461,14 +108,9 @@ export default async function handler(req, res) {
   if (!apiKey) {
     console.error(`[${reqId}] Missing OPENAI_API_KEY`);
     const fallback = buildFallback("", "missing OPENAI_API_KEY on server");
-    const response = buildFinalResponse(fallback, {
-      fallbackBaseQuestion: "",
-      reqId,
-      startTime,
-      wasTruncated: false,
-      raw_input: ""
-    });
-    res.status(200).json(response);
+    // inject request_id into meta
+    fallback.meta.request_id = reqId;
+    res.status(200).json(fallback);
     return;
   }
 
@@ -490,178 +132,49 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Enforce max length to avoid runaway cost / prompt injection
+  // Enforce max length to avoid runaway cost / injection
   let truncated = raw_input;
   let wasTruncated = false;
-  if (truncated.length > INPUTCHECK_MAX_CHARS) {
-    truncated = truncated.slice(0, INPUTCHECK_MAX_CHARS);
+  if (truncated.length > INPUT_MAX_CHARS) {
+    truncated = truncated.slice(0, INPUT_MAX_CHARS);
     wasTruncated = true;
   }
 
   try {
     const systemPrompt = `
-You are "Input Check Raptor-3", a capsule-first engine for theanswervault.com.
+You are "Query Condenser v1", a tiny engine that converts messy natural language questions into short, search-style Google queries.
 
-Your single mission is to turn any natural-language question into:
-- ONE cleaned, answerable question,
-- ONE search-style canonical query,
-- ONE snippet-ready answer capsule (~25 words),
-- ONE short supporting mini answer,
-- Plus minimal structure fields so downstream tools can function.
+Your ONLY job:
+- Read the user's raw_input.
+- Produce ONE short canonical search query that a user would realistically type into Google to get a good answer.
+
+Rules for "canonical_query":
+- 3–12 words.
+- All lowercase.
+- No punctuation except spaces and an optional question mark.
+- Use generic language, not "I" / "my", unless absolutely necessary for meaning.
+- Always keep the main entities and task or comparison.
+- Remove emotional language, side stories, and extra details unless they materially change the intent.
+
+Examples:
+- raw_input: "Why does the front passenger floor of my 2019 Jeep JL keep getting soaked after storms even though the dealer said they fixed the leak?"
+  → canonical_query: "jeep jl 2019 passenger floor wet after rain"
+
+- raw_input: "At almost 40 with kids and a full-time job, is it too late to pivot into AI or learn coding seriously?"
+  → canonical_query: "is it too late to learn coding at 40"
+
+- raw_input: "For thinning hair, is SMP or a hair transplant actually the smarter move when you factor cost and downtime?"
+  → canonical_query: "smp vs hair transplant cost and downtime"
 
 You must return a SINGLE JSON object with EXACTLY this shape:
 
 {
-  "inputcheck": {
-    "cleaned_question": "string",
-    "canonical_query": "string",
-    "flags": ["vague_scope", "stacked_asks", "missing_context", "safety_risk", "off_topic"],
-    "score_10": 0,
-    "grade_label": "string",
-    "clarification_required": false,
-    "next_best_question": "string",
-    "engine_version": "string"
-  },
-  "mini_answer": "string",
-  "vault_node": {
-    "slug": "string",
-    "vertical_guess": "string",
-    "cmn_status": "draft",
-    "public_url": null
-  },
-  "share_blocks": {
-    "answer_only": "string",
-    "answer_with_link": "string"
-  },
-  "decision_frame": {
-    "question_type": "string",
-    "pros": [
-      {
-        "label": "string",
-        "reason": "string",
-        "tags": ["string"],
-        "spawn_question_slug": "string"
-      }
-    ],
-    "cons": [
-      {
-        "label": "string",
-        "reason": "string",
-        "tags": ["string"],
-        "spawn_question_slug": "string"
-      }
-    ],
-    "personal_checks": [
-      {
-        "label": "string",
-        "prompt": "string",
-        "dimension": "string"
-      }
-    ]
-  },
-  "intent_map": {
-    "primary_intent": "string",
-    "sub_intents": ["string"]
-  },
-  "action_protocol": {
-    "type": "string",
-    "steps": ["string"],
-    "estimated_effort": "string",
-    "recommended_tools": ["string"]
-  },
-  "answer_capsule_25w": "string",
-  "owned_insight": "string"
+  "canonical_query": "string"
 }
 
 Do NOT add or remove keys.
-Do NOT change nesting.
-All string fields must be plain strings (never null).
-Return ONLY the JSON object with no extra commentary, no backticks, and no Markdown.
-
-------------------------------------------------
-PRIORITIES (ANSWER CAPSULE FIRST)
-------------------------------------------------
-When you allocate effort, focus in this order:
-
-1) inputcheck.cleaned_question
-2) inputcheck.canonical_query
-3) answer_capsule_25w
-4) mini_answer
-5) inputcheck.flags, score_10, clarification_required, next_best_question
-6) intent_map + action_protocol
-7) decision_frame, vault_node, share_blocks, owned_insight
-
-Lower-priority fields can be simple, generic, and short. The capsule and mini_answer must be high quality.
-
-------------------------------------------------
-CLEANED QUESTION & CANONICAL QUERY
-------------------------------------------------
-"cleaned_question":
-- Rewrite the raw input into ONE clear, answerable question with a single dominant intent.
-- Remove slang, side stories, and stacked asks.
-- If multiple topics appear, pick the dominant one; put secondary goals into intent_map.sub_intents.
-
-"canonical_query":
-- Short, realistic Google-style search phrase for the same primary intent.
-- 3–12 words, minimal punctuation, no quotes.
-- Prefer “entity + task/attribute”, for example:
-  - "jeep jl passenger floor leak cause"
-  - "is smp better than hair transplant"
-  - "how much caffeine per day safe"
-
-Both fields must reflect the same main question.
-
-------------------------------------------------
-ANSWER CAPSULE (AI OVERVIEW SNIPPET)
-------------------------------------------------
-"answer_capsule_25w":
-- ONE sentence, about 20–25 words, that directly answers cleaned_question.
-- Use a clear stance for yes/no-type questions:
-  - "Yes, ..." when the answer is broadly yes.
-  - "No, ..." when the answer is broadly no.
-  - Or "It depends, but generally ..." when nuance is important.
-- Include at least one key condition, trade-off, or caveat when relevant.
-- Use clear entities instead of vague pronouns when helpful.
-- Do NOT include URLs.
-
-------------------------------------------------
-MINI ANSWER (SUPPORTING DETAIL ONLY)
-------------------------------------------------
-"mini_answer":
-- 2–5 sentences that support and expand the capsule.
-- The FIRST sentence must add new information and must not just restate the capsule in similar words.
-- Use short, direct sentences (one main idea per sentence).
-- Explain briefly:
-  - WHY the capsule answer is true,
-  - WHEN it might change or who the main exceptions are,
-  - WHO is most affected,
-  - WHAT simple next steps someone should consider.
-- Do NOT include URLs.
-
-------------------------------------------------
-FLAGS, SCORE, CLARIFICATION
-------------------------------------------------
-Use "flags", "score_10", "grade_label", "clarification_required", and "next_best_question" to briefly describe answer quality, safety, and one valuable follow-up question.
-
-------------------------------------------------
-LOWER-PRIORITY FIELDS
-------------------------------------------------
-Keep decision_frame, intent_map, action_protocol, vault_node, share_blocks, and owned_insight valid but concise and generic when needed.
-
-------------------------------------------------
-GLOBAL STYLE & SAFETY
-------------------------------------------------
-- Set "inputcheck.engine_version" to "${ENGINE_VERSION}".
-- Do NOT mention JSON, prompts, engines, Input Check, OpenAI, or models in any user-facing fields.
-- Do NOT include URLs in "answer_capsule_25w" or "mini_answer".
-- For health, legal, financial, or safety-sensitive DIY topics:
-  - Keep answers high-level and general.
-  - Emphasize that individual situations vary.
-  - Encourage consulting qualified professionals before acting.
-  - Set "safety_risk" in flags when there is meaningful personal risk.
-- For questions about trusting or replacing AI, say that AI usually complements rather than fully replaces search engines or human experts, and suggest verifying important information with reputable sources before acting.
-
-Return ONLY the JSON object described above. No extra text, no explanations, no Markdown.
+Do NOT include any explanations, comments, or markdown.
+Return ONLY the JSON object.
 `.trim();
 
     // AbortController for hard timeout
@@ -683,7 +196,7 @@ Return ONLY the JSON object described above. No extra text, no explanations, no 
         response_format: { type: "json_object" },
         temperature: 0.1,
         top_p: 0.8,
-        max_tokens: 700,
+        max_tokens: 150,
         messages: [
           { role: "system", content: systemPrompt },
           {
@@ -697,7 +210,6 @@ Return ONLY the JSON object described above. No extra text, no explanations, no 
         ]
       })
     }).catch((err) => {
-      // fetch itself can throw before we reach ok-status check
       throw err;
     });
 
@@ -713,14 +225,8 @@ Return ONLY the JSON object described above. No extra text, no explanations, no 
         truncated,
         "OpenAI HTTP " + openaiRes.status
       );
-      const response = buildFinalResponse(fallback, {
-        fallbackBaseQuestion: truncated,
-        reqId,
-        startTime,
-        wasTruncated,
-        raw_input
-      });
-      res.status(200).json(response);
+      fallback.meta.request_id = reqId;
+      res.status(200).json(fallback);
       return;
     }
 
@@ -728,85 +234,63 @@ Return ONLY the JSON object described above. No extra text, no explanations, no 
     try {
       completion = await openaiRes.json();
     } catch (err) {
-      console.error(`[${reqId}] Error parsing OpenAI JSON wrapper:`, err);
+      console.error(`[${reqId}] Error parsing OpenAI JSON:`, err);
       const fallback = buildFallback(
         truncated,
-        "invalid JSON from OpenAI wrapper"
+        "invalid JSON from OpenAI"
       );
-      const response = buildFinalResponse(fallback, {
-        fallbackBaseQuestion: truncated,
-        reqId,
-        startTime,
-        wasTruncated,
-        raw_input
-      });
-      res.status(200).json(response);
+      fallback.meta.request_id = reqId;
+      res.status(200).json(fallback);
       return;
     }
 
-    const content =
-      completion?.choices?.[0]?.message?.content || "{}";
+    const content = completion?.choices?.[0]?.message?.content || "{}";
 
-    // Salvage parse: try raw, then slice between first/last brace
-    let payload = null;
+    let payload;
     try {
       payload = JSON.parse(content);
     } catch (err) {
-      try {
-        const firstBrace = content.indexOf("{");
-        const lastBrace = content.lastIndexOf("}");
-        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-          const sliced = content.slice(firstBrace, lastBrace + 1);
-          payload = JSON.parse(sliced);
-        } else {
-          throw err;
-        }
-      } catch (err2) {
-        console.error(
-          `[${reqId}] JSON parse error from model content:`,
-          err2,
-          content
-        );
-        const fallback = buildFallback(
-          truncated,
-          "invalid JSON from model"
-        );
-        const response = buildFinalResponse(fallback, {
-          fallbackBaseQuestion: truncated,
-          reqId,
-          startTime,
-          wasTruncated,
-          raw_input
-        });
-        res.status(200).json(response);
-        return;
-      }
+      console.error(
+        `[${reqId}] JSON parse error from model content:`,
+        err,
+        content
+      );
+      const fallback = buildFallback(
+        truncated,
+        "invalid JSON from model"
+      );
+      fallback.meta.request_id = reqId;
+      res.status(200).json(fallback);
+      return;
     }
 
-    const response = buildFinalResponse(payload, {
-      fallbackBaseQuestion: truncated,
-      reqId,
-      startTime,
-      wasTruncated,
-      raw_input
-    });
+    const canonical = (payload.canonical_query || "").toString().trim();
 
-    res.status(200).json(response);
+    const processing_time_ms = Date.now() - startTime;
+
+    const responseBody = {
+      canonical_query: canonical,
+      meta: {
+        request_id: reqId,
+        engine_version: ENGINE_VERSION,
+        model: OPENAI_MODEL,
+        processing_time_ms,
+        input_length_chars: raw_input.length,
+        was_truncated: wasTruncated,
+        backend_error: false
+      }
+    };
+
+    res.status(200).json(responseBody);
   } catch (err) {
     const reason =
       err && err.name === "AbortError"
         ? "OpenAI request timeout"
         : "unexpected server error";
 
-    console.error(`[${reqId}] Unexpected InputCheck error:`, err);
+    console.error(`[${reqId}] Unexpected Query Condenser error:`, err);
     const fallback = buildFallback(raw_input, reason);
-    const response = buildFinalResponse(fallback, {
-      fallbackBaseQuestion: raw_input,
-      reqId,
-      startTime,
-      wasTruncated,
-      raw_input
-    });
-    res.status(200).json(response);
+    fallback.meta.request_id = reqId;
+    res.status(200).json(fallback);
   }
 }
