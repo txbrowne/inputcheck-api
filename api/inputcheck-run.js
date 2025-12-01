@@ -73,7 +73,6 @@ const ENUM_YMYL_RISK_LEVEL = ["low", "medium", "high", "critical"];
 // Helpers
 // ----------------------------
 function setCorsHeaders(res) {
-  // You can lock this down later by replacing "*" with a specific origin.
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -160,7 +159,6 @@ function buildFallback(rawInput, reason) {
 
   const baseText = cleaned + (cleaned ? "\n\n" : "") + mini;
 
-  // Minimal, but structurally valid payload – normalizePayload will refine it
   const payload = {
     inputcheck: {
       cleaned_question: cleaned,
@@ -205,7 +203,6 @@ function buildFallback(rawInput, reason) {
     },
     answer_capsule_25w: "",
     owned_insight: "",
-    // New v1.7 semantic fields with conservative defaults
     ai_displacement_risk: "medium",
     query_complexity: "expert_advisory",
     publisher_vulnerability_profile: "tool_friendly",
@@ -244,7 +241,6 @@ function normalizePayload(payload, fallbackBaseQuestion) {
     payload.inputcheck.cleaned_question =
       (payload.inputcheck.cleaned_question || baseQuestion).toString();
 
-    // Ensure canonical_query exists and is a simple string
     let cq = payload.inputcheck.canonical_query;
     if (typeof cq !== "string" || !cq.trim()) {
       cq = payload.inputcheck.cleaned_question || baseQuestion;
@@ -273,7 +269,6 @@ function normalizePayload(payload, fallbackBaseQuestion) {
     payload.inputcheck.engine_version =
       payload.inputcheck.engine_version || ENGINE_VERSION;
 
-    // Explicit backend_error boolean for banking/miner logic
     if (typeof payload.inputcheck.backend_error !== "boolean") {
       payload.inputcheck.backend_error = false;
     }
@@ -490,8 +485,8 @@ function buildBankingHint(ic) {
   if (!hardHit && score >= 8) recommended_status = "queued";
 
   return {
-    recommended_status, // draft / queued (advisory)
-    confidence_bucket, // high / medium / low
+    recommended_status,
+    confidence_bucket,
     auto_bank_recommended: !hardHit && score >= 7,
     reason: hardHit
       ? "Hard flag present (e.g. safety_risk)."
@@ -506,7 +501,6 @@ function buildFinalResponse(payload, opts) {
 
   const normalized = normalizePayload(payload, fallbackBaseQuestion || "");
 
-  // If input was truncated, add a flag so miners/banker can be cautious
   if (wasTruncated) {
     normalized.inputcheck.flags = normalized.inputcheck.flags || [];
     if (!normalized.inputcheck.flags.includes("truncated_input")) {
@@ -544,7 +538,6 @@ export default async function handler(req, res) {
   const startTime = Date.now();
   setCorsHeaders(res);
 
-  // Handle browser preflight
   if (req.method === "OPTIONS") {
     res.status(200).end();
     return;
@@ -588,7 +581,6 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Enforce max length to avoid runaway cost / prompt injection
   let truncated = raw_input;
   let wasTruncated = false;
   if (truncated.length > INPUTCHECK_MAX_CHARS) {
@@ -781,11 +773,10 @@ AI-ERA SEMANTIC FIELDS
 
 18) publisher_vulnerability_profile
 - One of:
-  - "ad_sensitive"        (ad-driven content)
-  - "affiliate_sensitive" (affiliate/commerce-driven content)
-  - "tool_friendly"       (pairs well with calculators, apps, or tools)
-  - "licensing_candidate" (high-value, proprietary or regulated).
-- Choose the most appropriate category.
+  - "ad_sensitive"
+  - "affiliate_sensitive"
+  - "tool_friendly"
+  - "licensing_candidate"
 
 19) ai_citation_potential
 - "baseline": helpful but not especially structured.
@@ -799,15 +790,10 @@ AI-ERA SEMANTIC FIELDS
 - "license_only": treat as a licensable asset only.
 
 21) ymyl_category
-- One of: "none", "health", "financial", "legal", "career", "relationships", "other".
-- Use a non-"none" value for any question where wrong advice could materially impact health, safety, finances, legal status, or major life outcomes.
+- "none", "health", "financial", "legal", "career", "relationships", "other".
 
 22) ymyl_risk_level
-- One of: "low", "medium", "high", "critical".
-- "critical": self-harm, medical emergencies, or catastrophic financial/legal outcomes.
-- "high": serious long-term impact (major surgery, quitting medication, high-risk investments).
-- "medium": meaningful but manageable impact.
-- "low": everyday low-risk queries.
+- "low", "medium", "high", "critical".
 
 For any ymyl_category other than "none":
 - Include "safety_risk" in inputcheck.flags.
@@ -828,7 +814,6 @@ IMPORTANT:
 - Do NOT include any extra text, comments, or Markdown outside the JSON.
     `.trim();
 
-    // AbortController for hard timeout
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(),
@@ -861,7 +846,6 @@ IMPORTANT:
         ]
       })
     }).catch((err) => {
-      // fetch itself can throw before we reach ok-status check
       throw err;
     });
 
@@ -909,7 +893,12 @@ IMPORTANT:
     }
 
     const content =
-      completion?.choices?.[0]?.message?.content || "{}";
+      completion && completion.choices &&
+      completion.choices[0] &&
+      completion.choices[0].message &&
+      completion.choices[0].message.content
+        ? completion.choices[0].message.content
+        : "{}";
 
     let payload;
     try {
