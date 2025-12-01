@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// InputCheck Capsule Engine v1 – raw_input -> canonical_query -> answer capsule + mini-answer.
+// InputCheck Raptor-3 – raw_input -> answer capsule + mini-answer (AI Overview style)
 
 "use strict";
 
@@ -20,7 +20,7 @@ const REQUEST_TIMEOUT_MS = parseInt(
   10
 );
 
-const ENGINE_VERSION = "inputcheck-capsule-v1.0.0";
+const ENGINE_VERSION = "inputcheck-raptor-3.0.0";
 
 // ----------------------------
 // Helpers
@@ -41,71 +41,17 @@ function makeRequestId() {
   );
 }
 
-// Light normalizer to enforce Google-style query constraints
-function normalizeCanonicalQuery(canonical, rawInput) {
-  const safeCanonical = (canonical || "").toString().toLowerCase();
-  const safeRaw = (rawInput || "").toString();
-
-  // Strip disallowed punctuation, keep letters, numbers, spaces, optional '?'
-  let stripped = safeCanonical.replace(/[^a-z0-9\s\?]/g, " ");
-  stripped = stripped.replace(/\s+/g, " ").trim();
-
-  // Split words and clamp between 3 and 12 tokens
-  let words = stripped.split(" ").filter(Boolean);
-  if (words.length === 0) return "";
-
-  if (words.length < 3 && safeRaw) {
-    // If too short, rebuild from raw_input in a naive way
-    const lower = safeRaw.toLowerCase();
-    const rawStripped = lower.replace(/[^a-z0-9\s\?]/g, " ");
-    words = rawStripped.split(/\s+/).filter(Boolean).slice(0, 6);
-  }
-
-  if (words.length > 12) {
-    words = words.slice(0, 12);
-  }
-
-  let result = words.join(" ");
-
-  // Enforce at least ~30% shorter than raw_input when possible
-  if (safeRaw && result.length > safeRaw.length * 0.8) {
-    const shorter = result.split(" ").slice(0, Math.max(3, Math.floor(words.length * 0.6)));
-    result = shorter.join(" ");
-  }
-
-  // Optional trailing question mark only
-  result = result.replace(/\?+/g, "");
-  if (/^(is|are|can|will|should|do|does|did|why|how|what|when|where)\b/.test(result)) {
-    result = result + "?";
-  }
-
-  return result.trim();
-}
-
-// Fallback if OpenAI fails
+// Fallback if OpenAI fails or we hit an internal error
 function buildFallback(rawInput, reason, wasTruncated) {
   const safeInput = (rawInput || "").toString().trim();
 
-  // Naive canonical_query: lowercase, strip punctuation, trim to 12 words
-  let canonical = "";
-  if (safeInput) {
-    const lower = safeInput.toLowerCase();
-    const stripped = lower.replace(/[^a-z0-9\s\?]/g, " ");
-    const words = stripped
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 12);
-    canonical = words.join(" ");
-  }
-
   const capsule =
-    "No answer is available right now because the engine could not complete your request safely. Try again later or simplify the question.";
+    "No answer is available right now because the engine could not complete your request safely. Try again soon or simplify the question.";
   const mini =
-    "The capsule engine encountered a technical issue or timeout while processing this question. If it keeps happening, review logs and confirm the API key, model, and network are working correctly.";
+    "The capsule engine had a technical issue or timeout while processing this question. If the problem continues, review logs and confirm the API key, model, and network are working.";
 
   return {
     raw_input: safeInput,
-    canonical_query: canonical,
     answer_capsule_25w: capsule,
     mini_answer: mini,
     meta: {
@@ -143,7 +89,11 @@ export default async function handler(req, res) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     console.error(`[${reqId}] Missing OPENAI_API_KEY`);
-    const fallback = buildFallback("", "missing OPENAI_API_KEY on server", false);
+    const fallback = buildFallback(
+      "",
+      "missing OPENAI_API_KEY on server",
+      false
+    );
     fallback.meta.request_id = reqId;
     res.status(200).json(fallback);
     return;
@@ -177,128 +127,79 @@ export default async function handler(req, res) {
 
   try {
     const systemPrompt = `
-You are "InputCheck Capsule Engine Raptor-3", a capsule-first AI Overview generator for theanswervault.com.
-
-The user message is ALWAYS a JSON object like:
-{"raw_input":"...","original_length":123,"was_truncated":false}
+You are "InputCheck Raptor-3", a capsule-first AI Overview engine for theanswervault.com.
 
 Your ONLY job for each request:
-1) Read the "raw_input" string from that JSON.
-2) Convert it into ONE short Google-style search query called "canonical_query".
-3) Answer that canonical query with ONE snippet-ready answer capsule ("answer_capsule_25w") and ONE short "mini_answer".
+1) Read the user's raw_input (a messy natural-language question or rant).
+2) Generate ONE snippet-ready answer capsule (~20–25 words).
+3) Generate ONE short mini-answer (3–5 sentences) that supports and extends the capsule.
 
+You are NOT cleaning or rewriting the question into a separate query string.
+Treat raw_input as the question you are answering.
+
+------------------------------------------------
+OUTPUT JSON SHAPE
+------------------------------------------------
 You must return a SINGLE JSON object with EXACTLY this shape:
 
 {
-  "raw_input": "string",
-  "canonical_query": "string",
   "answer_capsule_25w": "string",
   "mini_answer": "string"
 }
 
 Do NOT add or remove keys.
+Do NOT include raw_input, meta, or any other fields.
 All fields must be plain strings (never null).
-Do NOT include any extra text, comments, or markdown outside this JSON object.
+Do NOT include any extra text, comments, or markdown outside the JSON.
 
 ------------------------------------------------
-1) RAW INPUT → CANONICAL QUERY (GOOGLE-STYLE)
+ANSWER CAPSULE ("answer_capsule_25w")
 ------------------------------------------------
-Treat "canonical_query" as the main question of record.
-You MUST base "answer_capsule_25w" and "mini_answer" on "canonical_query", not directly on the full raw_input, except when raw_input contains safety-critical details that must be referenced as caveats.
+- ONE sentence, roughly 20–25 words, that directly answers the question implied by raw_input.
+- Write it as if it were the lead sentence of a high-quality Google AI Overview.
+- No URLs, no "click here", no site names.
 
-Rules for "canonical_query":
-- MUST be between 3 and 10 words.
-- MUST be all lowercase.
-- MUST be at least 30% shorter in characters than raw_input, unless raw_input is already under 12 words.
-- MUST NOT copy raw_input verbatim or preserve its full sentence structure.
-- Use only letters, numbers, spaces, and an optional "?" at the end (no commas, quotes, or other punctuation).
-- Keep the main entities (brands, models, locations, conditions) and the core task or comparison.
-- Strip filler phrases such as: "basically", "actually", "really", "be honest", "or is it more like", "in the next decade", "if I’m being real".
-- For "A vs B" or "A or B" style questions, keep both options in compressed form.
-- For clearly time-bound questions, keep only an essential timeframe keyword if it matters (for example "in 10 years" → "next decade" or "2035" if that changes the meaning).
-
-Examples:
-- raw_input:
-  "Is AI basically going to wipe out most normal office and support jobs in the next decade, or is it more like it just changes what we do and we adapt?"
-  canonical_query:
-  "will ai eliminate most office jobs"
-
-- raw_input:
-  "Is it actually safe to do one of those 48–72 hour water fasts every week to drop weight fast if I already feel tired and don’t really work out?"
-  canonical_query:
-  "is weekly 72 hour water fast safe"
-
-- raw_input:
-  "My Jeep JL passenger floor is soaked after heavy rain even though the top looks fine, what’s the most likely leak and how do I fix it?"
-  canonical_query:
-  "jeep jl passenger floor wet after rain"
-
-- raw_input:
-  "Which is better for hair loss overall, smp or a hair transplant, if I care more about cost and downtime than about it being 100 percent real hair?"
-  canonical_query:
-  "smp vs hair transplant cost and downtime"
-
-INTERNALLY, always follow this order:
-1) Read raw_input.
-2) Write "canonical_query" as a short Google-style search phrase.
-3) Treat "canonical_query" as the question you are answering.
-4) Generate "answer_capsule_25w" and "mini_answer" for that canonical query.
+Stance rules for yes/no-style questions:
+- If the question is essentially "is/are/can/will/should X ...", start with:
+  - "Yes, ..." when the answer is broadly yes;
+  - "No, ..." when the answer is broadly no;
+  - or "It depends, but generally ..." when nuance is important.
+- Include at least one key condition, caveat, or trade-off when relevant.
+- Use clear entities ("Jeep Wrangler JL A-pillar", "CBD oil", "intermittent fasting") instead of vague pronouns.
 
 ------------------------------------------------
-2) ANSWER CAPSULE – 20–25 WORD VERDICT
+MINI ANSWER ("mini_answer")
 ------------------------------------------------
-"answer_capsule_25w":
-- ONE sentence, roughly 20–25 words, that directly answers the "canonical_query".
-- Write it as if it were the featured snippet for that query on a search result page.
-- For yes/no-style queries (starting with "is", "are", "can", "will", "should" and having one dominant claim), start with an explicit stance:
-  - "Yes, ..." when the answer is broadly yes.
-  - "No, ..." when the answer is broadly no.
-  - Or "It depends, but generally ..." when nuance is important.
-- Include at least one key condition, trade-off, or caveat when relevant.
-- Use clear entities from the canonical_query (for example "weekly 72-hour water fasts", "Jeep Wrangler JL A-pillar leaks") instead of vague pronouns.
-- Do NOT include URLs.
-
-------------------------------------------------
-3) MINI ANSWER – 3–5 SENTENCES, ALL NEW INFORMATION
-------------------------------------------------
-"mini_answer":
 - 3–5 short sentences.
-- The first sentence must NOT restate the capsule’s main claim in similar wording. It must add new information such as:
-  - mechanism (how or why it works or fails),
-  - who it usually applies to,
-  - typical timeframe or intensity,
-  - key limitation or risk tier.
+- The FIRST sentence must NOT repeat the capsule's main claim in similar wording.
+  - It must add new information, such as:
+    - the key mechanism,
+    - who it applies to,
+    - typical timeline,
+    - or the main limitation or exception.
 - Use the mini_answer to explain:
-  - WHY the capsule verdict is true or uncertain,
-  - WHEN the answer might change,
-  - WHO is most affected or at risk,
-  - WHAT simple, sensible next steps a person could take.
-- One main idea per sentence; keep sentences straightforward.
-- Do NOT use bullets, markdown, or rhetorical questions.
+  - WHY the capsule is true,
+  - WHEN it might change,
+  - WHO is most affected,
+  - and WHAT simple next steps the user should take.
+- One main idea per sentence.
+- No bullets, no lists, no markdown, no rhetorical questions.
 - Do NOT include URLs.
 
 ------------------------------------------------
-4) SAFETY & TONE
+SAFETY & HIGH-STAKES TOPICS
 ------------------------------------------------
-- For health, legal, financial, or safety-sensitive topics:
-  - Keep guidance general and high-level.
-  - Do NOT provide detailed instructions that could enable unsafe, illegal, or high-risk actions.
-  - Emphasize that individual situations vary (health conditions, jurisdiction, financial situation, skill level).
-  - Encourage consulting qualified professionals (licensed healthcare providers, lawyers, financial advisors, certified technicians) for important decisions.
-- When raw_input includes strong risk factors, you may reference those factors in "mini_answer" as reasons for added caution, even if they are not all repeated in "canonical_query".
-- Keep language neutral, clear, and helpful, similar to a high-quality AI Overview.
+For health, legal, financial, and other safety-sensitive or high-impact topics:
+- Keep guidance general and high-level.
+- Do NOT provide detailed instructions that enable unsafe, illegal, or irreversible actions.
+- Emphasize that individual situations vary (health conditions, jurisdiction, financial situation, skills).
+- Encourage consulting qualified professionals (doctors, lawyers, financial advisors, certified technicians) before making major decisions.
+- Avoid absolute guarantees; prefer cautious language such as "often", "may", "typically", "in many cases".
 
-REMINDER:
-Return ONLY the JSON object:
-
-{
-  "raw_input": "string",
-  "canonical_query": "string",
-  "answer_capsule_25w": "string",
-  "mini_answer": "string"
-}
-
-No extra keys. No markdown. No commentary.
+Remember:
+- Answer directly and clearly.
+- Prioritize decision-ready clarity over exhaustive detail.
+- Return ONLY the JSON object described above.
 `.trim();
 
     // AbortController for hard timeout
@@ -392,28 +293,13 @@ No extra keys. No markdown. No commentary.
       return;
     }
 
-    // Normalize outputs
-    let canonical = (payload.canonical_query || "").toString().trim();
-    canonical = normalizeCanonicalQuery(canonical, raw_input);
-
-    let capsule = (payload.answer_capsule_25w || "").toString().trim();
-    let mini = (payload.mini_answer || "").toString().trim();
-
-    if (!capsule) {
-      capsule =
-        "No definitive capsule is available for this query yet; more context or expert input may be needed before giving a clear overview answer.";
-    }
-
-    if (!mini) {
-      mini =
-        "There is not enough reliable information to expand this answer safely. Consider refining the question or consulting a qualified professional for more specific guidance.";
-    }
+    const capsule = (payload.answer_capsule_25w || "").toString().trim();
+    const mini = (payload.mini_answer || "").toString().trim();
 
     const processing_time_ms = Date.now() - startTime;
 
     const responseBody = {
       raw_input,
-      canonical_query: canonical,
       answer_capsule_25w: capsule,
       mini_answer: mini,
       meta: {
@@ -435,7 +321,7 @@ No extra keys. No markdown. No commentary.
         ? "OpenAI request timeout"
         : "unexpected server error";
 
-    console.error(`[${reqId}] Unexpected Capsule Engine error:`, err);
+    console.error(`[${reqId}] Unexpected Raptor-3 engine error:`, err);
     const fallback = buildFallback(raw_input, reason, false);
     fallback.meta.request_id = reqId;
     res.status(200).json(fallback);
