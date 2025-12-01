@@ -1,5 +1,8 @@
+// Mini summary: Raptor-3 now runs as a lean capsule engine—raw_input in, canonical_query + answer capsule + mini-answer out, with just enough meta for logging and debugging.
+// Next best question: What front-end updates are needed so the inspector UI only expects this new lean contract and ignores the old fields?
+
 // api/inputcheck-run.js
-// InputCheck Capsule Engine v2 – raw_input -> answer capsule + mini-answer (no Google-style query).
+// InputCheck Raptor-3 Capsule Engine – raw_input -> canonical_query -> answer capsule + mini-answer.
 
 "use strict";
 
@@ -20,7 +23,7 @@ const REQUEST_TIMEOUT_MS = parseInt(
   10
 );
 
-const ENGINE_VERSION = "inputcheck-capsule-v2.0.0";
+const ENGINE_VERSION = "inputcheck-raptor-3.0.0";
 
 // ----------------------------
 // Helpers
@@ -41,17 +44,33 @@ function makeRequestId() {
   );
 }
 
+// Simple canonical query builder used as a fallback
+function buildCanonicalFromText(text) {
+  const safe = (text || "").toString().trim();
+  if (!safe) return "";
+
+  const lower = safe.toLowerCase();
+  const stripped = lower.replace(/[^a-z0-9\s\?]/g, " ");
+  const words = stripped
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 12);
+  return words.join(" ");
+}
+
 // Fallback if OpenAI fails
 function buildFallback(rawInput, reason, wasTruncated) {
   const safeInput = (rawInput || "").toString().trim();
+  const canonical = buildCanonicalFromText(safeInput);
 
   const capsule =
-    "No answer is available right now because the capsule engine could not complete your request safely. Try again later or simplify the question.";
+    "No answer is available right now because the engine could not complete your request safely. Try again in a moment or simplify the question.";
   const mini =
-    "The capsule engine hit a technical issue or timeout while processing this question. If the problem continues, review logs and confirm the API key, model, and network are working correctly.";
+    "The capsule engine had a technical or network issue while processing this question. If the problem continues, review logs and confirm the API key, model, and network configuration.";
 
   return {
     raw_input: safeInput,
+    canonical_query: canonical,
     answer_capsule_25w: capsule,
     mini_answer: mini,
     meta: {
@@ -127,20 +146,29 @@ export default async function handler(req, res) {
 
   try {
     const systemPrompt = `
-You are "InputCheck Capsule Engine v2", a capsule-first AI Overview generator for theanswervault.com.
+You are "InputCheck Raptor-3 Capsule Engine", a capsule-first AI Overview generator for theanswervault.com.
 
 Your ONLY job for each request:
-1) Read the user's raw_input (a messy natural-language question or thought).
-2) Answer that input with:
-   - ONE snippet-ready answer capsule (~20–25 words).
-   - ONE short mini-answer (3–5 sentences).
+1) Read the user's raw_input.
+2) Convert it into ONE short Google-style search query ("canonical_query").
+3) Answer that query with ONE snippet-ready answer capsule (~20–25 words) and ONE short mini-answer (3–5 sentences).
+
+Rules for "canonical_query":
+- 3–12 words.
+- All lowercase.
+- No commas, quotes, or extra punctuation; only letters, numbers, spaces, and an optional question mark at the end.
+- Keep the main entities (brands, models, locations) and the core task or comparison.
+- Remove filler like "basically", "actually", "really", "just", "or is it more like".
+- If the user asks about "A or B" or "X vs Y", keep both options in a compressed form, e.g. "smp vs hair transplant cost and downtime".
 
 Rules for "answer_capsule_25w":
-- ONE sentence, roughly 20–25 words, that directly answers the user's main question.
+- ONE sentence, roughly 20–25 words, that directly answers the canonical_query.
 - For yes/no-style questions (is, are, can, will, should) start with an explicit stance:
-  - "Yes, ...", "No, ...", or "It depends, but generally ...".
+  - "Yes, ..." when the answer is broadly yes,
+  - "No, ..." when the answer is broadly no,
+  - or "It depends, but generally ..." when nuance or conditions matter.
 - Include at least one key condition, trade-off, or caveat when relevant.
-- Use clear entities (e.g., "AI bubble", "Jeep Wrangler JL A-pillar", "intermittent fasting") instead of vague pronouns.
+- Use clear entities instead of vague pronouns.
 - Do NOT include URLs.
 
 Rules for "mini_answer":
@@ -152,11 +180,12 @@ Rules for "mini_answer":
 
 Safety:
 - For health, legal, financial, or other high-stakes topics, keep guidance general, avoid detailed how-to instructions, and advise consulting qualified professionals.
-- Use cautious language like "may", "could", or "is likely" instead of absolute certainty when outcomes are uncertain.
 
 You must return a SINGLE JSON object with EXACTLY this shape:
 
 {
+  "raw_input": "string",
+  "canonical_query": "string",
   "answer_capsule_25w": "string",
   "mini_answer": "string"
 }
@@ -257,15 +286,27 @@ Do NOT include any extra text, comments, or markdown.
       return;
     }
 
-    const capsule = (payload.answer_capsule_25w || "").toString().trim();
-    const mini = (payload.mini_answer || "").toString().trim();
+    // Coerce and backfill fields
+    const canonicalRaw = (payload.canonical_query || "").toString().trim();
+    const capsuleRaw = (payload.answer_capsule_25w || "").toString().trim();
+    const miniRaw = (payload.mini_answer || "").toString().trim();
+
+    const canonical_query =
+      canonicalRaw || buildCanonicalFromText(truncated);
+    const answer_capsule_25w =
+      capsuleRaw ||
+      "No capsule answer was generated. Try asking the question more directly or run the engine again.";
+    const mini_answer =
+      miniRaw ||
+      "The engine did not return a full mini answer for this question. Consider re-running the request or simplifying the input for clearer processing.";
 
     const processing_time_ms = Date.now() - startTime;
 
     const responseBody = {
       raw_input,
-      answer_capsule_25w: capsule,
-      mini_answer: mini,
+      canonical_query,
+      answer_capsule_25w,
+      mini_answer,
       meta: {
         request_id: reqId,
         engine_version: ENGINE_VERSION,
