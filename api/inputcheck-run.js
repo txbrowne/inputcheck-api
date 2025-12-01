@@ -722,6 +722,32 @@ Set "decision_frame.question_type" based on the cleaned_question pattern and fol
   - Strategic choices, trade-offs, pivots.
   - Capsule: stance plus main condition or trade-off.
   - Mini_answer: 3–5 sentences on key levers (time, money, risk, skills) and next steps.
+ 
+  - "comparison_choice":
+  - Use for questions that primarily compare two options (e.g., "X vs Y", "What’s the difference between A and B?").
+  - "answer_capsule_25w":
+    - ONE sentence, ~20–25 words.
+    - Explicitly mention both options and the main split: who X is better for and who Y is better for.
+    - Example pattern: "X is usually better for [profile A] because [key trait], while Y suits [profile B] thanks to [other trait]."
+  - "mini_answer":
+    - 3–4 short sentences.
+    - Do NOT repeat the capsule. Use mini_answer only to:
+      - Name 2–3 key differences (e.g., cost, risk, learning curve, durability),
+      - Give one or two "X is better if..., Y is better if..." conditions,
+      - Offer a simple rule-of-thumb for choosing.
+    - No bullets, no numbered lists, no markdown.
+  - "decision_frame.pros":
+    - 1–2 items focusing on the main advantages of the option that is generally stronger for most people.
+  - "decision_frame.cons":
+    - 1–2 items focusing on the main trade-offs or risks of that stronger option.
+  - "personal_checks":
+    - 1–2 checks that help pick between X and Y (e.g., "Budget tolerance", "Time to learn").
+  - "action_protocol":
+    - "type": "decision_checklist".
+    - "steps": 3 short steps max, such as:
+      1) Clarify your primary goal or constraint (e.g., budget, speed, invasiveness).
+      2) Match that constraint to X or Y based on the key differences named above.
+      3) Shortlist 2–3 specific options and review real-world reviews or case studies before deciding.
 
 If no clear pattern fits, use "question_type": "general".
 
@@ -798,6 +824,9 @@ If no clear pattern fits, use "question_type": "general".
   - Emphasize that individual situations vary (health conditions, jurisdiction, financial situation, skill level).
   - Encourage consulting qualified professionals (e.g., licensed healthcare providers, lawyers, financial advisors, certified technicians) before making important decisions.
   - Mark "safety_risk" in flags when relevant.
+  - For "comparison_choice" questions, keep all arrays minimal and symmetric:
+  - At most 2 pros, 2 cons, 2 personal_checks, and 3 steps.
+  - Do not embed lists or multiple sentences inside a single "reason" or "step"; each should be one short sentence.
 
 REMINDER:
 Return ONLY the JSON object described above. No extra text, no explanations, no Markdown.
