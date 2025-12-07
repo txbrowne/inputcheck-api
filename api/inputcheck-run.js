@@ -1,6 +1,5 @@
 // api/inputcheck-run.js
-// InputCheck Raptor-3 Capsule Engine v3.1.0
-// raw_input  → canonical_query → answer capsule (~25 words) → mini-answer (3–5 sentences)
+// InputCheck Raptor-3 Capsule Engine – raw_input -> canonical_query -> answer capsule + mini-answer.
 
 "use strict";
 
@@ -52,8 +51,34 @@ function buildCanonicalFromText(text) {
   const words = stripped
     .split(/\s+/)
     .filter(Boolean)
-    .slice(0, 10);
+    .slice(0, 12);
   return words.join(" ");
+}
+
+// Enforce that canonical_query is short and not just the raw_input
+function normalizeCanonical(rawInput, canonicalRaw) {
+  const base = (rawInput || "").toString().trim();
+  const cand = (canonicalRaw || "").toString().trim();
+
+  const baseNorm = base.toLowerCase().replace(/\s+/g, " ").trim();
+  const candNorm = cand.toLowerCase().replace(/\s+/g, " ").trim();
+
+  const wordCount = candNorm ? candNorm.split(" ").length : 0;
+  const tooLong = wordCount > 12 || candNorm.length > 120;
+
+  const tooSimilar =
+    !!candNorm &&
+    (candNorm === baseNorm ||
+      // if candidate is just a long substring of the original or vice versa
+      (baseNorm.includes(candNorm) && wordCount > 8) ||
+      candNorm.includes(baseNorm));
+
+  if (!candNorm || tooLong || tooSimilar) {
+    // Force a compressed, Google-style query
+    return buildCanonicalFromText(base);
+  }
+
+  return candNorm;
 }
 
 // Fallback if OpenAI fails
@@ -149,66 +174,40 @@ You are "InputCheck Raptor-3 Capsule Engine", a capsule-first AI Overview genera
 Your ONLY job for each request:
 1) Read the user's raw_input.
 2) Convert it into ONE short Google-style search query ("canonical_query").
-3) Answer that query with ONE snippet-ready answer capsule (~20–25 words).
-4) Then expand with ONE short mini-answer (3–5 sentences) that adds depth, safety, and next steps.
+3) Answer that query with ONE snippet-ready answer capsule (~20–25 words) and ONE short mini-answer (3–5 sentences).
 
--------------- CANONICAL_QUERY --------------
-"canonical_query" is the compressed Google-style version of the question.
-
-Rules:
-- Always SHORTER than raw_input. It must not simply copy the question.
+Rules for "canonical_query":
+- This is NOT the full question. It is a SHORT search phrase built from the question.
+- It must ALWAYS be shorter than raw_input and must never simply copy or lightly rephrase the full sentence.
 - 3–10 words, all lowercase.
-- No commas, quotes, brackets, emojis, or markdown.
-- Only letters, numbers, spaces, and an optional "?" at the end.
-- Remove filler like "be honest", "actually", "really", "just", "basically", "everyone is screaming", "tik tok keeps saying".
-- Remove time fluff unless essential (e.g. "next decade" → "long term").
-- Keep main entities (brands, models, locations, job titles, key numbers) and the core verb/decision.
-- For multi-part A vs B questions, compress to a single comparison phrase:
-  - Example: "pay off 18 percent credit card debt or invest extra cash"
-    → "pay 18 percent card debt or invest"
-- If your first draft of canonical_query would be identical or nearly identical to raw_input, shorten it by stripping adjectives, side comments, examples, and extra clauses until it fits these rules.
+- Only letters, numbers, spaces, and an optional question mark at the end.
+- Strip personal chatter and platforms: remove age, "i / my / me", TikTok, YouTube, etc.
+- Keep only: main condition or entity + key decision or problem.
+- Example transforms:
+  - raw_input: "I’m 52 with borderline diabetes and high cholesterol. TikTok says Ozempic and GLP-1 shots are a shortcut, but my doctor wants me to focus on diet and exercise first. Is it smarter to push for Ozempic now or stick with lifestyle changes only?"
+  - canonical_query: "borderline diabetes ozempic vs lifestyle changes"
+  - raw_input: "I’m 45 with a 6% mortgage and some extra cash each month. Is it smarter to pay extra on the mortgage or invest?"
+  - canonical_query: "6 percent mortgage vs investing"
+- If your first draft of canonical_query is more than 10 words OR looks very similar to raw_input, you MUST rewrite it until it is a compact phrase like the examples above.
 
--------------- ANSWER_CAPSULE_25W --------------
-"answer_capsule_25w" is a single AI Overview–style sentence.
-
-Rules:
-- Exactly ONE sentence, about 20–25 words (rough target, not strict).
-- Directly answers the canonical_query.
-- For yes/no or will/should questions, start with an explicit stance:
-  - "Yes, ..." when the broad answer is yes.
-  - "No, ..." when the broad answer is no.
-  - "It depends, but generally ..." when the answer is conditional.
-- State the *main entity* explicitly (job title, condition, product, etc.), not just "it" or "this".
+Rules for "answer_capsule_25w":
+- ONE sentence, roughly 20–25 words, that directly answers the canonical_query.
+- For yes/no-style questions, start with an explicit stance:
+  - "Yes, ...", "No, ...", or "It depends, but generally ...".
 - Include at least one key condition, trade-off, or caveat when relevant.
-- Neutral, factual tone; no hype.
-- NO URLs, NO "click here", NO references to InputCheck or the model.
+- Use clear entities instead of vague pronouns.
+- Do NOT include URLs.
 
-Examples of stance:
-- "No, AI will not take all jobs, but it will automate repetitive roles and push workers toward tasks that need human judgment, creativity, and empathy."
-- "Yes, paying off 18% credit card debt first is usually best, because that high interest cost often exceeds realistic long-term investment returns after taxes and risk."
+Rules for "mini_answer":
+- 3–5 short sentences.
+- The FIRST sentence must NOT repeat the capsule's main claim in similar wording. It must add new information such as mechanism, who it applies to, timeline, or key limitation.
+- Explain WHY the capsule is true, WHEN it might change, WHO is most affected, and WHAT simple steps the user should take next.
+- One main idea per sentence. No bullets, no markdown, no rhetorical questions.
+- Do NOT include URLs.
 
--------------- MINI_ANSWER --------------
-"mini_answer" is a 3–5 sentence expansion that goes beyond the capsule.
+Safety:
+- For health, legal, financial, or other high-stakes topics, keep guidance general, avoid detailed how-to instructions, and advise consulting qualified professionals.
 
-Rules:
-- 3–5 short sentences, plain text.
-- The FIRST sentence must NOT repeat the capsule's main claim in similar wording.
-  - Instead, add new information: who this mainly applies to, when it matters most, or the mechanism behind the answer.
-- Use the remaining sentences to cover:
-  - WHY the answer is true (mechanism, trade-offs, typical scenarios).
-  - WHAT simple steps the person should take next (2–3 steps in one sentence is fine).
-  - LIMITS or boundaries (when the advice might change, or when to be cautious).
-- One main idea per sentence. No rhetorical questions, no bullet points, no markdown, no URLs.
-- Keep it calm and practical, not alarmist.
-
--------------- SAFETY & YMYL --------------
-For health, finance, legal, career, or other high-stakes (YMYL) topics:
-- Stay general and avoid detailed prescriptive instructions.
-- Emphasize that individual situations differ.
-- When appropriate, recommend consulting a qualified professional (doctor, financial planner, lawyer, etc.).
-- Avoid promising guaranteed outcomes or specific returns.
-
--------------- CONTRACT (STRICT) --------------
 You must return a SINGLE JSON object with EXACTLY this shape:
 
 {
@@ -218,21 +217,10 @@ You must return a SINGLE JSON object with EXACTLY this shape:
   "mini_answer": "string"
 }
 
-Rules:
-Rules for "canonical_query":
-- This is NOT the full question. It is a SHORT search phrase built from the question.
-- It must ALWAYS be shorter than raw_input and must never simply copy or lightly rephrase the full sentence.
-- 3–10 words, all lowercase.
-- Only letters, numbers, spaces, and an optional question mark at the end. No commas, quotes, or long clauses.
-- Strip all personal chatter and platforms: remove age, “I / my / me”, TikTok, YouTube, “be honest”, “actually”, “really”, “everyone is screaming”, etc.
-- Keep only: main condition or entity + key decision or problem.
-- Example transforms:
-  - raw_input: "I’m 52 with borderline diabetes and high cholesterol. TikTok says Ozempic and GLP-1 shots are a shortcut, but my doctor wants me to focus on diet and exercise first. Is it smarter to push for Ozempic now or stick with lifestyle changes only?"
-  - canonical_query: "borderline diabetes ozempic vs lifestyle changes"
-  - raw_input: "I’m 45 with a 6% mortgage and some extra cash each month. Is it smarter to pay extra on the mortgage or invest?"
-  - canonical_query: "6 percent mortgage vs investing"
-- If your first draft of canonical_query is more than 10 words OR looks very similar to raw_input, you MUST rewrite it until it is a compact phrase like the examples above.
-`.trim();
+Do NOT add or remove keys.
+All fields must be plain strings (never null).
+Do NOT include any extra text, comments, or markdown.
+    `.trim();
 
     // AbortController for hard timeout
     const controller = new AbortController();
@@ -267,7 +255,6 @@ Rules for "canonical_query":
         ]
       })
     }).catch((err) => {
-      // Network / fetch-level error
       throw err;
     });
 
@@ -331,11 +318,12 @@ Rules for "canonical_query":
     const capsuleRaw = (payload.answer_capsule_25w || "").toString().trim();
     const miniRaw = (payload.mini_answer || "").toString().trim();
 
-    const canonical_query =
-      canonicalRaw || buildCanonicalFromText(truncated);
+    const canonical_query = normalizeCanonical(truncated, canonicalRaw);
+
     const answer_capsule_25w =
       capsuleRaw ||
       "No capsule answer was generated. Try asking the question more directly or run the engine again.";
+
     const mini_answer =
       miniRaw ||
       "The engine did not return a full mini answer for this question. Consider re-running the request or simplifying the input for clearer processing.";
