@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// InputCheck Raptor-3.4 – raw_input -> cleaned_question -> google_style_query -> answer capsule + mini-answer.
+// InputCheck Raptor-3.5 – raw_input -> cleaned_question -> google_style_query -> full AI Overview (capsule + mini-answer + AO-style block).
 
 "use strict";
 
@@ -20,7 +20,7 @@ const REQUEST_TIMEOUT_MS = parseInt(
   10
 );
 
-const ENGINE_VERSION = "inputcheck-raptor-3.4.0";
+const ENGINE_VERSION = "inputcheck-raptor-3.5.0";
 
 // ----------------------------
 // Helpers
@@ -168,23 +168,80 @@ function normalizeGoogleQuery(cleanedQuestion, googleRaw) {
 function buildSlug(text) {
   const safe = (text || "").toString().toLowerCase().trim();
   if (!safe) return "inputcheck-node";
-  return safe
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "inputcheck-node";
+  return (
+    safe
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80) || "inputcheck-node"
+  );
+}
+
+// Build a basic meta_title from the cleaned question or query
+function buildMetaTitle(cleanedQuestion, googleQuery) {
+  const base =
+    (cleanedQuestion || "").toString().trim() ||
+    (googleQuery || "").toString().trim();
+  if (!base) return "InputCheck answer overview";
+  // Light truncation; HTML layer can refine further.
+  return base.length > 70 ? base.slice(0, 67) + "..." : base;
+}
+
+// Build a basic meta_summary from capsule + mini
+function buildMetaSummary(answerCapsule, miniAnswer) {
+  const capsule = (answerCapsule || "").toString().trim();
+  const mini = (miniAnswer || "").toString().trim();
+  const combined = (capsule + " " + mini).trim();
+  if (!combined) {
+    return "This answer overview summarizes likely causes, key factors, and practical next steps for this question.";
+  }
+  // Rough cap ~220 chars; HTML layer can further adjust.
+  return combined.length > 220
+    ? combined.slice(0, 217) + "..."
+    : combined;
+}
+
+// Normalize an array of strings
+function normalizeStringArray(arr, maxItems = 8) {
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .map((v) => (v == null ? "" : v.toString().trim()))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+// Normalize follow-up Q&A array
+function normalizeFollowUpQA(arr, maxItems = 4) {
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  for (const item of arr) {
+    if (!item || typeof item !== "object") continue;
+    const question = (item.question || "").toString().trim();
+    const answer_capsule_15w = (item.answer_capsule_15w || "")
+      .toString()
+      .trim();
+    if (!question && !answer_capsule_15w) continue;
+    out.push({ question, answer_capsule_15w });
+    if (out.length >= maxItems) break;
+  }
+  return out;
 }
 
 // Fallback payload if OpenAI fails
 function buildFallback(rawInput, reason, wasTruncated) {
   const safeInput = (rawInput || "").toString().trim();
-  const cleaned_question = safeInput;
+  const cleaned_question = safeInput || "InputCheck engine fallback answer";
   const google_style_query = buildGoogleStyleQuery(safeInput);
   const url_slug = buildSlug(google_style_query || cleaned_question);
 
   const capsule =
-    "No answer is available right now because the engine could not complete your request safely. Try again in a moment or simplify the question.";
+    "No detailed answer is available right now because the engine could not complete your request safely. Try again later or simplify the question.";
   const mini =
-    "The capsule engine had a technical or network issue while processing this question. If the problem continues, review logs and confirm the API key, model, and network configuration.";
+    "This is a temporary fallback response generated when the capsule engine hit a technical or safety limit. Do not rely on this for critical health, legal, or financial decisions. Try asking again with a clearer, more focused question or consult a qualified professional for personalized guidance.";
+
+  const meta_title = buildMetaTitle(cleaned_question, google_style_query);
+  const meta_summary = buildMetaSummary(capsule, mini);
+  const next_best_question =
+    "What is the very next detail you would want answered about this question?";
 
   return {
     raw_input: safeInput,
@@ -192,9 +249,24 @@ function buildFallback(rawInput, reason, wasTruncated) {
     google_style_query,
     answer_capsule_25w: capsule,
     mini_answer: mini,
-    next_best_question:
-      "What is the very next detail you would want answered about this question?",
+    next_best_question,
     url_slug,
+    meta_title,
+    meta_summary,
+    full_ai_overview: {
+      primary_answer: {
+        answer_capsule_25w: capsule,
+        mini_answer: mini
+      },
+      key_points: [
+        "This is a fallback answer used when the main engine cannot complete a safe or valid response."
+      ],
+      step_by_step: [],
+      critical_caveat:
+        "Do not rely on this fallback for critical health, legal, or financial decisions; consult a qualified professional.",
+      follow_up_qa: [],
+      next_best_question
+    },
     meta: {
       request_id: null,
       engine_version: ENGINE_VERSION,
@@ -266,9 +338,14 @@ export default async function handler(req, res) {
 
   try {
     const systemPrompt = `
-You are "InputCheck Raptor-3 Capsule Engine", a capsule-first AI Overview generator for theanswervault.com.
+You are "InputCheck Raptor-3.5 Full AO Engine", a capsule-first AI Overview generator for theanswervault.com.
 
-For each request you MUST output a SINGLE JSON object with EXACTLY these keys:
+Your job:
+- Take messy real-world questions.
+- Clean them into a canonical question and a short Google-style query.
+- Generate a full AI Overview block that can outperform Google's AI Overview in clarity, priority, and usefulness.
+
+You MUST output a SINGLE JSON object with EXACTLY these TOP-LEVEL keys:
 
 {
   "cleaned_question": "string",
@@ -276,22 +353,42 @@ For each request you MUST output a SINGLE JSON object with EXACTLY these keys:
   "answer_capsule_25w": "string",
   "mini_answer": "string",
   "next_best_question": "string",
-  "url_slug": "string"
+  "url_slug": "string",
+  "meta_title": "string",
+  "meta_summary": "string",
+  "full_ai_overview": {
+    "primary_answer": {
+      "answer_capsule_25w": "string",
+      "mini_answer": "string"
+    },
+    "key_points": ["string"],
+    "step_by_step": ["string"],
+    "critical_caveat": "string",
+    "follow_up_qa": [
+      {
+        "question": "string",
+        "answer_capsule_15w": "string"
+      }
+    ],
+    "next_best_question": "string"
+  }
 }
 
-Definitions:
+Do NOT add or remove top-level keys. Do NOT return arrays or extra fields at the top level beyond these.
+
+Definitions and requirements:
 
 - "cleaned_question":
   - One clear, answerable question in plain language.
-  - You may trim chatter and platforms ("TikTok says", "my friend says", etc.) but keep essential context (age, condition, constraints) when it changes the answer.
+  - Trim chatter and platforms ("TikTok says", "my friend says") but KEEP essential context (age, conditions, constraints, location) IF it changes the answer.
+  - Example: "Why does water leak into the passenger-side footwell on my 2017 Jeep Wrangler when it rains?"
 
 - "google_style_query":
-  - A SHORT Google-style search phrase built from the cleaned_question.
-  - NOT the full sentence, NOT a rephrased paragraph.
+  - SHORT Google-style search phrase built from the cleaned_question.
   - 3–10 words, all lowercase.
   - Only letters, numbers, spaces, and an optional question mark at the end.
-  - Strip pronouns, filler, and platforms (I, my, me, TikTok, YouTube, etc.).
-  - Keep the condition/entity + key decision or comparison.
+  - Strip pronouns, filler, and platforms (i, my, me, tiktok, youtube, etc.).
+  - Focus on entity + condition + decision/comparison.
   - Examples:
     - cleaned_question: "I'm 52 with borderline diabetes and high cholesterol. Is it smarter to push for Ozempic now or stick with lifestyle changes only?"
       google_style_query: "borderline diabetes ozempic vs lifestyle changes"
@@ -301,8 +398,9 @@ Definitions:
 - "answer_capsule_25w":
   - ONE sentence, about 20–25 words.
   - Directly answers the cleaned_question / google_style_query.
-  - For yes/no-style questions, start with "Yes, ...", "No, ...", or "It depends, but generally ...".
+  - For yes/no questions, start with "Yes, ...", "No, ...", or "It depends, but generally ...".
   - Include at least one key condition, trade-off, or caveat.
+  - Be slightly more decisive than a typical Google AI Overview, while staying safe and honest.
   - No URLs.
 
 - "mini_answer":
@@ -314,17 +412,68 @@ Definitions:
 
 - "next_best_question":
   - One natural follow-up question that could be its own Q&A node.
-  - Target the next decision or detail a careful person would ask.
+  - Target the next decision or detail a thoughtful person would ask after reading the mini_answer.
 
 - "url_slug":
-  - A short, hyphenated slug built from the google-style query.
+  - A short, hyphenated slug built from the google_style_query.
   - Lowercase, words separated by hyphens, no spaces or punctuation.
   - Example: "borderline-diabetes-ozempic-vs-lifestyle-changes".
 
-Safety:
-- For health, legal, and financial topics, keep guidance general and recommend consulting qualified professionals for personal decisions.
+- "meta_title":
+  - Short title suitable for a page title or tab title.
+  - 45–70 characters is ideal, but do not include a length counter.
+  - Summarize the question and/or main decision clearly.
+  - Neutral tone, no clickbait, no brand names or CTAs.
 
-Return ONLY the JSON object. No markdown, no commentary.
+- "meta_summary":
+  - A concise, neutral summary that could be reused for both meta description and sge:summary.
+  - 110–200 characters is ideal, but do not include a length counter.
+  - Describe the main answer, key factors, and next step in one compact paragraph.
+  - No brand names, no CTAs, no URLs.
+
+- "full_ai_overview":
+  - This is the full AO-style section that can be rendered on a page.
+
+  - "primary_answer":
+    - "answer_capsule_25w": repeat the main capsule.
+    - "mini_answer": repeat the mini-answer expansion.
+    - These should match the top-level "answer_capsule_25w" and "mini_answer" content.
+
+  - "key_points":
+    - 3–5 bullets (plain strings).
+    - Each bullet should highlight a key cause, factor, or consideration.
+    - Order them by importance, not as a random list.
+    - This should read like the "key information" bullets in a Google AI Overview, but more prioritized.
+
+  - "step_by_step":
+    - 3–6 short, imperative sentences describing what to do FIRST, SECOND, THIRD, etc.
+    - Focus on the most useful sequence for the user, not every possible action.
+    - This should read like AO's "How to" or "Steps" section.
+
+  - "critical_caveat":
+    - ONE concise sentence describing the most important warning or constraint.
+    - Be specific and practical, not vague ("consult a professional").
+    - Example: "Avoid forcing foam blocks into the seals—over-compression can warp the top and create new leaks."
+
+  - "follow_up_qa":
+    - 1–3 short Q&A pairs.
+    - Each "question" is a natural follow-up question.
+    - Each "answer_capsule_15w" is a 12–20 word micro-capsule answer (single sentence).
+    - These should read like the short follow-up answers you might see under AO.
+
+  - "next_best_question":
+    - Same idea as the top-level "next_best_question", but positioned as part of the AO block.
+    - You may repeat the same string as the top-level field.
+
+Safety:
+- For medical, legal, mental health, and major financial topics:
+  - Stay general and non-diagnostic.
+  - Avoid telling the user exactly what treatment, medication, or financial product to choose.
+  - Encourage consulting qualified professionals or trusted local advisors for personal decisions.
+
+Formatting:
+- Return ONLY the JSON object described above.
+- No markdown, no commentary, no extra text before or after.
     `.trim();
 
     const controller = new AbortController();
@@ -345,7 +494,7 @@ Return ONLY the JSON object. No markdown, no commentary.
         response_format: { type: "json_object" },
         temperature: 0.15,
         top_p: 0.8,
-        max_tokens: 500,
+        max_tokens: 900,
         messages: [
           { role: "system", content: systemPrompt },
           {
@@ -417,7 +566,9 @@ Return ONLY the JSON object. No markdown, no commentary.
       return;
     }
 
+    // ----------------------------
     // Coerce + backfill fields
+    // ----------------------------
     const cleaned_question = (
       payload.cleaned_question || truncated
     )
@@ -435,30 +586,100 @@ Return ONLY the JSON object. No markdown, no commentary.
       googleRaw
     );
 
-    const answer_capsule_25w = (
+    // Full AO raw object (may be missing / partial)
+    const full_raw =
+      payload.full_ai_overview && typeof payload.full_ai_overview === "object"
+        ? payload.full_ai_overview
+        : {};
+
+    const primary_raw =
+      full_raw.primary_answer && typeof full_raw.primary_answer === "object"
+        ? full_raw.primary_answer
+        : {};
+
+    // Answer capsule and mini answer: prefer top-level, then primary_answer, then defaults
+    const defaultCapsule =
+      "No capsule answer was generated. Try asking the question more directly or run the engine again.";
+    const defaultMini =
+      "The engine did not return a full mini answer for this question. Consider re-running the request or simplifying the input for clearer processing.";
+
+    let answer_capsule_25w = (
       payload.answer_capsule_25w ||
-      "No capsule answer was generated. Try asking the question more directly or run the engine again."
+      primary_raw.answer_capsule_25w ||
+      defaultCapsule
     )
       .toString()
       .trim();
 
-    const mini_answer = (
+    let mini_answer = (
       payload.mini_answer ||
-      "The engine did not return a full mini answer for this question. Consider re-running the request or simplifying the input for clearer processing."
+      primary_raw.mini_answer ||
+      defaultMini
     )
       .toString()
       .trim();
 
-    const next_best_question = (
+    // Next best question: prefer AO-level, then top-level, then default
+    const nbfDefault =
+      "What is the very next detail you would want answered about this question?";
+
+    const nbqRaw = (
+      full_raw.next_best_question ||
       payload.next_best_question ||
-      "What is the very next detail you would want answered about this question?"
+      nbfDefault
     )
       .toString()
       .trim();
 
+    const next_best_question = nbqRaw || nbfDefault;
+
+    // Meta fields
+    const meta_title = (
+      payload.meta_title ||
+      buildMetaTitle(cleaned_question, google_style_query)
+    )
+      .toString()
+      .trim();
+
+    const meta_summary = (
+      payload.meta_summary ||
+      buildMetaSummary(answer_capsule_25w, mini_answer)
+    )
+      .toString()
+      .trim();
+
+    // url_slug from payload or built from query/question
     const url_slug = buildSlug(
-      payload.url_slug || google_style_query || cleaned_question
+      payload.url_slug ||
+        google_style_query ||
+        cleaned_question
     );
+
+    // Normalize AO block
+    const key_points = normalizeStringArray(full_raw.key_points, 6);
+    const step_by_step = normalizeStringArray(full_raw.step_by_step, 8);
+    const critical_caveat = (
+      full_raw.critical_caveat || ""
+    )
+      .toString()
+      .trim();
+
+    const follow_up_qa = normalizeFollowUpQA(
+      full_raw.follow_up_qa,
+      4
+    );
+
+    const full_ai_overview = {
+      primary_answer: {
+        answer_capsule_25w,
+        mini_answer
+      },
+      key_points,
+      step_by_step,
+      critical_caveat,
+      follow_up_qa,
+      next_best_question
+    };
 
     const processing_time_ms = Date.now() - startTime;
 
@@ -470,6 +691,9 @@ Return ONLY the JSON object. No markdown, no commentary.
       mini_answer,
       next_best_question,
       url_slug,
+      meta_title,
+      meta_summary,
+      full_ai_overview,
       meta: {
         request_id: reqId,
         engine_version: ENGINE_VERSION,
@@ -489,7 +713,10 @@ Return ONLY the JSON object. No markdown, no commentary.
         ? "OpenAI request timeout"
         : "unexpected server error";
 
-    console.error(`[${reqId}] Unexpected Capsule Engine error:`, err);
+    console.error(
+      `[${reqId}] Unexpected Capsule Engine error:`,
+      err
+    );
     const fallback = buildFallback(raw_input, reason, false);
     fallback.meta.request_id = reqId;
     res.status(200).json(fallback);
