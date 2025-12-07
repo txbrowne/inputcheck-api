@@ -353,7 +353,7 @@ export default async function handler(req, res) {
   }
 
   try {
-      const systemPrompt = `
+    const systemPrompt = `
 You are "Input Check v1.5", the question-cleaning and mini-answer engine for theanswervault.com.
 
 Your job is to take a messy, real-world user question and produce a CONSISTENT ANSWER STRUCTURE FOR MONETIZATION:
@@ -379,7 +379,7 @@ Your job is to take a messy, real-world user question and produce a CONSISTENT A
    - Directly answers the cleaned_question.
    - For yes/no or decision questions, start with a stance:
      - "Yes, …", "No, …", or "It depends, but generally …".
-   - Use a **stance + contrast** pattern where possible:
+   - Use a stance + contrast pattern where possible:
      - "[Stance], but [high-level impact contrast]."
      - For "will X replace Y" or "take all the jobs" style questions, include a phrase that contrasts displacement/changes with total replacement (e.g., "job displacement and new roles, not total elimination").
    - Explicitly name the main entity instead of saying "it" or "this problem".
@@ -512,3 +512,101 @@ IMPORTANT:
 - Do NOT change key names, add keys, or remove keys.
 - Do NOT include any extra text, comments, or Markdown outside the JSON object.
     `.trim();
+
+    // AbortController for hard timeout
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      REQUEST_TIMEOUT_MS
+    );
+
+    const openaiRes = await fetch(OPENAI_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + apiKey
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        response_format: { type: "json_object" },
+        temperature: 0.2,
+        top_p: 0.9,
+        max_tokens: 900,
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: JSON.stringify({
+              raw_input: truncated,
+              original_length: raw_input.length,
+              was_truncated: wasTruncated
+            })
+          }
+        ]
+      })
+    }).catch((err) => {
+      // fetch itself can throw before we reach ok-status check
+      throw err;
+    });
+
+    clearTimeout(timeout);
+
+    if (!openaiRes.ok) {
+      const text = await openaiRes.text();
+      console.error(
+        `[${reqId}] OpenAI error ${openaiRes.status}:`,
+        text
+      );
+      const fallback = buildFallback(
+        truncated,
+        "OpenAI HTTP " + openaiRes.status
+      );
+      res.status(200).json(fallback);
+      return;
+    }
+
+    let completion;
+    try {
+      completion = await openaiRes.json();
+    } catch (err) {
+      console.error(`[${reqId}] Error parsing OpenAI JSON:`, err);
+      const fallback = buildFallback(
+        truncated,
+        "invalid JSON from OpenAI"
+      );
+      res.status(200).json(fallback);
+      return;
+    }
+
+    const content =
+      completion?.choices?.[0]?.message?.content || "{}";
+
+    let payload;
+    try {
+      payload = JSON.parse(content);
+    } catch (err) {
+      console.error(
+        `[${reqId}] JSON parse error from model content:`,
+        err,
+        content
+      );
+      payload = buildFallback(
+        truncated,
+        "invalid JSON from model"
+      );
+    }
+
+    const normalized = normalizePayload(payload, truncated);
+    res.status(200).json(normalized);
+  } catch (err) {
+    const reason =
+      err && err.name === "AbortError"
+        ? "OpenAI request timeout"
+        : "unexpected server error";
+
+    console.error(`[${reqId}] Unexpected InputCheck error:`, err);
+    const fallback = buildFallback(raw_input, reason);
+    res.status(200).json(fallback);
+  }
+}
