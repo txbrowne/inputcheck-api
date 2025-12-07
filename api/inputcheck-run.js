@@ -353,7 +353,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const systemPrompt = `
+      const systemPrompt = `
 You are "Input Check v1.5", the question-cleaning and mini-answer engine for theanswervault.com.
 
 Your job is to take a messy, real-world user question and produce a CONSISTENT ANSWER STRUCTURE FOR MONETIZATION:
@@ -368,6 +368,7 @@ Your job is to take a messy, real-world user question and produce a CONSISTENT A
    - 3–10 words, all lowercase, minimal punctuation.
    - Avoid "I / my / me" unless essential.
    - Preserve key entities (brands, models, locations, core numbers).
+   - When the raw_input is already a short, clean, search-style question (3–10 words, no ranting or extra clauses), canonical_query MAY be identical to the raw_input.
    - Example style:
      - "jeep jl front passenger floor leak fix"
      - "is smp better than hair transplant"
@@ -378,17 +379,21 @@ Your job is to take a messy, real-world user question and produce a CONSISTENT A
    - Directly answers the cleaned_question.
    - For yes/no or decision questions, start with a stance:
      - "Yes, …", "No, …", or "It depends, but generally …".
+   - Use a **stance + contrast** pattern where possible:
+     - "[Stance], but [high-level impact contrast]."
+     - For "will X replace Y" or "take all the jobs" style questions, include a phrase that contrasts displacement/changes with total replacement (e.g., "job displacement and new roles, not total elimination").
    - Explicitly name the main entity instead of saying "it" or "this problem".
    - Include at least one key tradeoff, condition, or caveat when relevant.
    - Written so it can stand alone as an AI Overview / featured snippet sentence.
 
 4) ONE "mini_answer" (3–5 sentences)
    - Expand the capsule without repeating it in different words.
+   - The mini_answer MUST NOT repeat more than 7 consecutive words from the answer_capsule_25w.
    - Sentence 1: WHO / WHEN – who this mainly applies to or when it matters.
    - Sentence 2: WHY – mechanism or reason (what causes the problem or makes the advice true).
    - Sentence 3: WHAT TO DO – 2–3 simple steps in one sentence ("check X, then Y, then Z").
    - Sentence 4: LIMITS – caveat or boundary, especially for money/health/legal topics.
-   - Sentence 5 (optional): NEXT FOCUS – point to what matters next (may align with next_best_question).
+   - Sentence 5 (optional): RULE-OF-THUMB – end with one simple, memorable rule ("the more repetitive the task, the higher the automation risk").
    - No rhetorical questions. No URLs.
 
 5) ONE "next_best_question"
@@ -415,10 +420,11 @@ Your job is to take a messy, real-world user question and produce a CONSISTENT A
      "Run this through Input Check at https://theanswervault.com/".
 
 9) "decision_frame"
-   - "question_type": pick a short type label ("decision", "troubleshooting", "how_to", "definition", "comparison").
+   - "question_type": pick a short type label ("decision", "troubleshooting", "how_to", "definition", "comparison", "impact").
    - "pros" and "cons": 0–3 items each.
      - Each item: { "label", "reason", "tags", "spawn_question_slug" }.
-   - "personal_checks": 0–3 quick internal checks a person should consider.
+   - For long-term impact or "will X replace Y" questions, use pros such as "efficiency" and "cost savings", and cons such as "displacement risk" and "skill gaps".
+   - "personal_checks": 0–3 quick internal checks a person should consider (e.g., "Is my work mostly repetitive?", "Do I rely on human relationships or complex judgment?").
 
 10) "intent_map"
    - "primary_intent": short phrase capturing the main user goal.
@@ -431,9 +437,10 @@ Your job is to take a messy, real-world user question and produce a CONSISTENT A
    - "recommended_tools": 0–3 tools, resources, or professionals (generic, no links).
 
 12) "owned_insight"
-   - Optional short sentence with an original, framework-style insight that goes beyond generic web answers.
+   - Optional short sentence (or very short pair of sentences) with an original, framework-style insight that goes beyond generic web answers.
+   - Think in terms of rules, heuristics, or diagnostics (e.g., "The safest jobs blend technical skill with human empathy and judgment").
    - If you have no meaningful owned insight, return "".
-   - Do NOT repeat the capsule.
+   - Do NOT repeat the capsule or the rule-of-thumb verbatim; add one layer of depth.
 
 CONTRACT (DO NOT VIOLATE):
 You must return a SINGLE JSON object with EXACTLY this shape:
@@ -505,101 +512,3 @@ IMPORTANT:
 - Do NOT change key names, add keys, or remove keys.
 - Do NOT include any extra text, comments, or Markdown outside the JSON object.
     `.trim();
-
-    // AbortController for hard timeout
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      REQUEST_TIMEOUT_MS
-    );
-
-    const openaiRes = await fetch(OPENAI_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + apiKey
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        response_format: { type: "json_object" },
-        temperature: 0.2,
-        top_p: 0.9,
-        max_tokens: 900,
-        messages: [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: JSON.stringify({
-              raw_input: truncated,
-              original_length: raw_input.length,
-              was_truncated: wasTruncated
-            })
-          }
-        ]
-      })
-    }).catch((err) => {
-      // fetch itself can throw before we reach ok-status check
-      throw err;
-    });
-
-    clearTimeout(timeout);
-
-    if (!openaiRes.ok) {
-      const text = await openaiRes.text();
-      console.error(
-        `[${reqId}] OpenAI error ${openaiRes.status}:`,
-        text
-      );
-      const fallback = buildFallback(
-        truncated,
-        "OpenAI HTTP " + openaiRes.status
-      );
-      res.status(200).json(fallback);
-      return;
-    }
-
-    let completion;
-    try {
-      completion = await openaiRes.json();
-    } catch (err) {
-      console.error(`[${reqId}] Error parsing OpenAI JSON:`, err);
-      const fallback = buildFallback(
-        truncated,
-        "invalid JSON from OpenAI"
-      );
-      res.status(200).json(fallback);
-      return;
-    }
-
-    const content =
-      completion?.choices?.[0]?.message?.content || "{}";
-
-    let payload;
-    try {
-      payload = JSON.parse(content);
-    } catch (err) {
-      console.error(
-        `[${reqId}] JSON parse error from model content:`,
-        err,
-        content
-      );
-      payload = buildFallback(
-        truncated,
-        "invalid JSON from model"
-      );
-    }
-
-    const normalized = normalizePayload(payload, truncated);
-    res.status(200).json(normalized);
-  } catch (err) {
-    const reason =
-      err && err.name === "AbortError"
-        ? "OpenAI request timeout"
-        : "unexpected server error";
-
-    console.error(`[${reqId}] Unexpected InputCheck error:`, err);
-    const fallback = buildFallback(raw_input, reason);
-    res.status(200).json(fallback);
-  }
-}
