@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// InputCheck Raptor-3 Capsule Engine – raw_input -> cleaned_question + google_style_query -> answer capsule + mini-answer.
+// InputCheck Raptor-3.4 – raw_input -> cleaned_question -> google_style_query -> answer capsule + mini-answer.
 
 "use strict";
 
@@ -20,13 +20,12 @@ const REQUEST_TIMEOUT_MS = parseInt(
   10
 );
 
-const ENGINE_VERSION = "inputcheck-raptor-3.3.0";
+const ENGINE_VERSION = "inputcheck-raptor-3.4.0";
 
 // ----------------------------
 // Helpers
 // ----------------------------
 function setCorsHeaders(res) {
-  // If you ever want to lock this down, replace "*" with your domain.
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -41,85 +40,161 @@ function makeRequestId() {
   );
 }
 
-// Build a compressed Google-style query (fallback)
-function buildGoogleQueryFromText(text) {
-  const safe = (text || "").toString().trim();
+// Very small stopword list just to shorten Google-style queries
+const STOPWORDS = new Set([
+  "the",
+  "a",
+  "an",
+  "to",
+  "of",
+  "for",
+  "with",
+  "and",
+  "or",
+  "is",
+  "are",
+  "am",
+  "be",
+  "was",
+  "were",
+  "do",
+  "does",
+  "did",
+  "on",
+  "in",
+  "at",
+  "from",
+  "about",
+  "that",
+  "this",
+  "these",
+  "those",
+  "my",
+  "our",
+  "your",
+  "their",
+  "me",
+  "i",
+  "we",
+  "you",
+  "they",
+  "just",
+  "really",
+  "actually",
+  "kind",
+  "sort",
+  "like",
+  "best",
+  "order",
+  "extra",
+  "use",
+  "using",
+  "help",
+  "need",
+  "want",
+  "should",
+  "would",
+  "could",
+  "can",
+  "will",
+  "tiktok",
+  "youtube",
+  "reddit",
+  "twitter",
+  "facebook"
+]);
+
+// Build a compressed Google-style query from any source text
+function buildGoogleStyleQuery(source) {
+  const safe = (source || "").toString().toLowerCase().trim();
   if (!safe) return "";
 
-  const lower = safe.toLowerCase();
-  // Keep only letters, numbers, spaces, question marks
-  const stripped = lower.replace(/[^a-z0-9\s\?]/g, " ");
-  const words = stripped
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 10); // hard cap to keep it short
+  const hadQuestionMark = safe.includes("?");
+  const stripped = safe.replace(/[^a-z0-9\s]/g, " ");
+  const rawWords = stripped.split(/\s+/).filter(Boolean);
 
-  return words.join(" ");
+  // First pass: drop stopwords
+  let kept = rawWords.filter((w) => !STOPWORDS.has(w));
+
+  // If we removed too much, fall back to the first few raw words
+  if (kept.length < 3) {
+    kept = rawWords.slice(0, 8);
+  }
+
+  // Hard cap to keep it short
+  kept = kept.slice(0, 10);
+
+  let query = kept.join(" ").trim();
+  if (!query) {
+    query = rawWords.slice(0, 8).join(" ").trim();
+  }
+
+  if (!query) return "";
+
+  if (hadQuestionMark && !query.endsWith("?")) {
+    query += "?";
+  }
+
+  return query;
 }
 
-// Enforce that google_style_query is short and not just the raw_input
-function normalizeGoogleQuery(rawInput, googleRaw) {
-  const base = (rawInput || "").toString().trim();
+// Ensure google_style_query is short and not a near-duplicate of the question
+function normalizeGoogleQuery(cleanedQuestion, googleRaw) {
+  const base = (cleanedQuestion || "").toString().trim();
   const cand = (googleRaw || "").toString().trim();
+
+  if (!base && !cand) return "";
 
   const baseNorm = base.toLowerCase().replace(/\s+/g, " ").trim();
   const candNorm = cand.toLowerCase().replace(/\s+/g, " ").trim();
 
   const wordCount = candNorm ? candNorm.split(" ").length : 0;
-  const tooLong = wordCount > 12 || candNorm.length > 120;
+  const tooLong = wordCount > 10 || candNorm.length > 120;
 
   const tooSimilar =
     !!candNorm &&
     (candNorm === baseNorm ||
-      (baseNorm.includes(candNorm) && wordCount > 8) ||
+      baseNorm.includes(candNorm) ||
       candNorm.includes(baseNorm));
 
   if (!candNorm || tooLong || tooSimilar) {
-    // Force a compressed, Google-style query
-    return buildGoogleQueryFromText(base);
+    return buildGoogleStyleQuery(base || cand);
   }
 
   return candNorm;
 }
 
-// Simple slug generator from google-style query
-function slugFromQuery(text) {
+// Simple slug generator from the Google-style query
+function buildSlug(text) {
   const safe = (text || "").toString().toLowerCase().trim();
-  if (!safe) return "";
-
+  if (!safe) return "inputcheck-node";
   return safe
-    .replace(/[^a-z0-9\s]/g, " ") // keep alnum + space
-    .trim()
-    .split(/\s+/)
-    .slice(0, 12)
-    .join("-")
-    .replace(/-+/g, "-");
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "inputcheck-node";
 }
 
-// Fallback if OpenAI fails – ALWAYS fills all fields
+// Fallback payload if OpenAI fails
 function buildFallback(rawInput, reason, wasTruncated) {
   const safeInput = (rawInput || "").toString().trim();
-  const cleaned_question = safeInput || "";
-  const google_style_query = buildGoogleQueryFromText(cleaned_question);
-  const canonical_query = google_style_query;
-  const slug = slugFromQuery(google_style_query);
+  const cleaned_question = safeInput;
+  const google_style_query = buildGoogleStyleQuery(safeInput);
+  const url_slug = buildSlug(google_style_query || cleaned_question);
 
-  const answer_capsule_25w =
+  const capsule =
     "No answer is available right now because the engine could not complete your request safely. Try again in a moment or simplify the question.";
-  const mini_answer =
+  const mini =
     "The capsule engine had a technical or network issue while processing this question. If the problem continues, review logs and confirm the API key, model, and network configuration.";
-  const next_best_question =
-    "What is the very next detail about this decision you would want answered?";
 
   return {
     raw_input: safeInput,
     cleaned_question,
     google_style_query,
-    canonical_query,
-    answer_capsule_25w,
-    mini_answer,
-    next_best_question,
-    slug,
+    answer_capsule_25w: capsule,
+    mini_answer: mini,
+    next_best_question:
+      "What is the very next detail you would want answered about this question?",
+    url_slug,
     meta: {
       request_id: null,
       engine_version: ENGINE_VERSION,
@@ -141,7 +216,6 @@ export default async function handler(req, res) {
   const startTime = Date.now();
   setCorsHeaders(res);
 
-  // Handle browser preflight
   if (req.method === "OPTIONS") {
     res.status(200).end();
     return;
@@ -177,13 +251,12 @@ export default async function handler(req, res) {
   }
 
   raw_input = raw_input.trim();
-
   if (!raw_input) {
     res.status(400).json({ error: "raw_input is required" });
     return;
   }
 
-  // Enforce max length to avoid runaway cost / injection
+  // Enforce max length
   let truncated = raw_input;
   let wasTruncated = false;
   if (truncated.length > INPUT_MAX_CHARS) {
@@ -195,70 +268,65 @@ export default async function handler(req, res) {
     const systemPrompt = `
 You are "InputCheck Raptor-3 Capsule Engine", a capsule-first AI Overview generator for theanswervault.com.
 
-Your ONLY job for each request:
-1) Read the user's raw_input.
-2) Rewrite it as ONE clear, single-focus question ("cleaned_question").
-3) Convert that into ONE short Google-style search query ("google_style_query").
-4) Answer that query with ONE snippet-ready answer capsule (~20–25 words) and ONE short mini-answer (3–5 sentences).
-5) Suggest ONE "next_best_question" that would naturally follow.
-
-Rules for "cleaned_question":
-- 1–2 sentences, natural and clear.
-- Keep the core entities (age only if crucial, conditions, drugs, job type, amounts) and the main decision or problem.
-- Strip rant, TikTok/YouTube chatter, side comments, and filler like "be honest", "everyone is screaming", "basically".
-- Imagine it as the H1 on a serious guide page.
-
-Rules for "google_style_query":
-- This is NOT the full question. It is a SHORT search phrase built from the question.
-- It must ALWAYS be shorter than raw_input and must never simply copy or lightly rephrase the full sentence.
-- 3–10 words, all lowercase.
-- Only letters, numbers, spaces, and an optional question mark at the end.
-- Remove personal pronouns and platforms: drop "i", "my", "me", "tiktok", "youtube", etc.
-- Keep: main condition/entity + key decision or comparison.
-- Example transforms:
-  - raw_input: "I’m 52 with borderline diabetes and high cholesterol. TikTok says Ozempic and GLP-1 shots are a shortcut, but my doctor wants me to focus on diet and exercise first. Is it smarter to push for Ozempic now or stick with lifestyle changes only?"
-  - cleaned_question: "For a 52-year-old with borderline diabetes and high cholesterol, is it smarter to add Ozempic now or focus on diet and exercise first?"
-  - google_style_query: "borderline diabetes ozempic vs lifestyle changes"
-  - raw_input: "I’m 45 with a 6% mortgage and some extra cash each month. Is it smarter to pay extra on the mortgage or invest?"
-  - google_style_query: "6 percent mortgage vs investing"
-- If your first draft of google_style_query is more than 10 words OR looks very similar to raw_input, you MUST rewrite it until it is a compact phrase like the examples above.
-
-Rules for "answer_capsule_25w":
-- ONE sentence, roughly 20–25 words, that directly answers the google_style_query.
-- For yes/no-style questions, start with an explicit stance:
-  - "Yes, ...", "No, ...", or "It depends, but generally ...".
-- Include at least one key condition, trade-off, or caveat when relevant.
-- Use clear entities instead of vague pronouns.
-- Do NOT include URLs.
-
-Rules for "mini_answer":
-- 3–5 short sentences.
-- The FIRST sentence must NOT repeat the capsule's main claim in similar wording. It must add new information such as mechanism, who it applies to, timeline, or key limitation.
-- Explain WHY the capsule is true, WHEN it might change, WHO is most affected, and WHAT simple steps the user should take next.
-- One main idea per sentence. No bullets, no markdown, no rhetorical questions.
-- Do NOT include URLs.
-
-Rules for "next_best_question":
-- One natural-language question that goes one layer deeper on the same entities or decision.
-- It should be something that could stand alone as a strong follow-up Q&A node.
-
-You must return a SINGLE JSON object with EXACTLY this shape:
+For each request you MUST output a SINGLE JSON object with EXACTLY these keys:
 
 {
-  "raw_input": "string",
   "cleaned_question": "string",
   "google_style_query": "string",
   "answer_capsule_25w": "string",
   "mini_answer": "string",
-  "next_best_question": "string"
+  "next_best_question": "string",
+  "url_slug": "string"
 }
 
-Do NOT add or remove keys.
-All fields must be plain strings (never null).
-Do NOT include any extra text, comments, or markdown.
+Definitions:
+
+- "cleaned_question":
+  - One clear, answerable question in plain language.
+  - You may trim chatter and platforms ("TikTok says", "my friend says", etc.) but keep essential context (age, condition, constraints) when it changes the answer.
+
+- "google_style_query":
+  - A SHORT Google-style search phrase built from the cleaned_question.
+  - NOT the full sentence, NOT a rephrased paragraph.
+  - 3–10 words, all lowercase.
+  - Only letters, numbers, spaces, and an optional question mark at the end.
+  - Strip pronouns, filler, and platforms (I, my, me, TikTok, YouTube, etc.).
+  - Keep the condition/entity + key decision or comparison.
+  - Examples:
+    - cleaned_question: "I'm 52 with borderline diabetes and high cholesterol. Is it smarter to push for Ozempic now or stick with lifestyle changes only?"
+      google_style_query: "borderline diabetes ozempic vs lifestyle changes"
+    - cleaned_question: "I'm 45 with a 6% mortgage and some extra cash each month. Is it smarter to pay extra on the mortgage or invest?"
+      google_style_query: "6 percent mortgage vs investing"
+
+- "answer_capsule_25w":
+  - ONE sentence, about 20–25 words.
+  - Directly answers the cleaned_question / google_style_query.
+  - For yes/no-style questions, start with "Yes, ...", "No, ...", or "It depends, but generally ...".
+  - Include at least one key condition, trade-off, or caveat.
+  - No URLs.
+
+- "mini_answer":
+  - 3–5 short sentences.
+  - The FIRST sentence must NOT simply restate the capsule.
+  - Add new information: mechanism, who it applies to, key limits, or next steps.
+  - Explain WHY, WHEN it might change, WHO is most affected, and WHAT the user should do next.
+  - No URLs, no bullet points, no markdown.
+
+- "next_best_question":
+  - One natural follow-up question that could be its own Q&A node.
+  - Target the next decision or detail a careful person would ask.
+
+- "url_slug":
+  - A short, hyphenated slug built from the google-style query.
+  - Lowercase, words separated by hyphens, no spaces or punctuation.
+  - Example: "borderline-diabetes-ozempic-vs-lifestyle-changes".
+
+Safety:
+- For health, legal, and financial topics, keep guidance general and recommend consulting qualified professionals for personal decisions.
+
+Return ONLY the JSON object. No markdown, no commentary.
     `.trim();
 
-    // AbortController for hard timeout
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(),
@@ -275,7 +343,7 @@ Do NOT include any extra text, comments, or markdown.
       body: JSON.stringify({
         model: OPENAI_MODEL,
         response_format: { type: "json_object" },
-        temperature: 0.1,
+        temperature: 0.15,
         top_p: 0.8,
         max_tokens: 500,
         messages: [
@@ -349,40 +417,48 @@ Do NOT include any extra text, comments, or markdown.
       return;
     }
 
-    // ----------------------------
-    // Coerce and backfill fields
-    // ----------------------------
-    const cleanedRaw = (payload.cleaned_question || "").toString().trim();
-    const googleRaw = (payload.google_style_query || "").toString().trim();
-    const capsuleRaw = (payload.answer_capsule_25w || "").toString().trim();
-    const miniRaw = (payload.mini_answer || "").toString().trim();
-    const nbqRaw = (payload.next_best_question || "").toString().trim();
+    // Coerce + backfill fields
+    const cleaned_question = (
+      payload.cleaned_question || truncated
+    )
+      .toString()
+      .trim();
 
-    // cleaned_question falls back to truncated input
-    const cleaned_question = cleanedRaw || truncated;
+    const googleRaw = (
+      payload.google_style_query || cleaned_question
+    )
+      .toString()
+      .trim();
 
-    // google_style_query is normalized and compressed
     const google_style_query = normalizeGoogleQuery(
       cleaned_question,
-      googleRaw || cleaned_question
+      googleRaw
     );
 
-    // canonical_query alias for compatibility with old UI
-    const canonical_query = google_style_query;
+    const answer_capsule_25w = (
+      payload.answer_capsule_25w ||
+      "No capsule answer was generated. Try asking the question more directly or run the engine again."
+    )
+      .toString()
+      .trim();
 
-    const answer_capsule_25w =
-      capsuleRaw ||
-      "No capsule answer was generated. Try asking the question more directly or run the engine again.";
+    const mini_answer = (
+      payload.mini_answer ||
+      "The engine did not return a full mini answer for this question. Consider re-running the request or simplifying the input for clearer processing."
+    )
+      .toString()
+      .trim();
 
-    const mini_answer =
-      miniRaw ||
-      "The engine did not return a full mini answer for this question. Consider re-running the request or simplifying the input for clearer processing.";
+    const next_best_question = (
+      payload.next_best_question ||
+      "What is the very next detail you would want answered about this question?"
+    )
+      .toString()
+      .trim();
 
-    const next_best_question =
-      nbqRaw ||
-      "What is the very next detail you would want answered about this situation?";
-
-    const slug = slugFromQuery(google_style_query);
+    const url_slug = buildSlug(
+      payload.url_slug || google_style_query || cleaned_question
+    );
 
     const processing_time_ms = Date.now() - startTime;
 
@@ -390,11 +466,10 @@ Do NOT include any extra text, comments, or markdown.
       raw_input,
       cleaned_question,
       google_style_query,
-      canonical_query,
       answer_capsule_25w,
       mini_answer,
       next_best_question,
-      slug,
+      url_slug,
       meta: {
         request_id: reqId,
         engine_version: ENGINE_VERSION,
