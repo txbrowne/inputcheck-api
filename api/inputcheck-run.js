@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// InputCheck Raptor-3 Capsule Engine – raw_input -> canonical_query -> answer capsule + mini-answer.
+// InputCheck Raptor-3 Capsule Engine – raw_input -> cleaned_question + google_style_query -> answer capsule + mini-answer.
 
 "use strict";
 
@@ -20,7 +20,7 @@ const REQUEST_TIMEOUT_MS = parseInt(
   10
 );
 
-const ENGINE_VERSION = "inputcheck-raptor-3.1.0";
+const ENGINE_VERSION = "inputcheck-raptor-3.2.0";
 
 // ----------------------------
 // Helpers
@@ -41,24 +41,26 @@ function makeRequestId() {
   );
 }
 
-// Simple canonical query builder used as a fallback
-function buildCanonicalFromText(text) {
+// Build a compressed Google-style query (fallback)
+function buildGoogleQueryFromText(text) {
   const safe = (text || "").toString().trim();
   if (!safe) return "";
 
   const lower = safe.toLowerCase();
+  // Keep only letters, numbers, spaces, question marks
   const stripped = lower.replace(/[^a-z0-9\s\?]/g, " ");
   const words = stripped
     .split(/\s+/)
     .filter(Boolean)
-    .slice(0, 12);
+    .slice(0, 10); // hard cap to keep it short
+
   return words.join(" ");
 }
 
-// Enforce that canonical_query is short and not just the raw_input
-function normalizeCanonical(rawInput, canonicalRaw) {
+// Enforce that google_style_query is short and not just the raw_input
+function normalizeGoogleQuery(rawInput, googleRaw) {
   const base = (rawInput || "").toString().trim();
-  const cand = (canonicalRaw || "").toString().trim();
+  const cand = (googleRaw || "").toString().trim();
 
   const baseNorm = base.toLowerCase().replace(/\s+/g, " ").trim();
   const candNorm = cand.toLowerCase().replace(/\s+/g, " ").trim();
@@ -69,33 +71,52 @@ function normalizeCanonical(rawInput, canonicalRaw) {
   const tooSimilar =
     !!candNorm &&
     (candNorm === baseNorm ||
-      // if candidate is just a long substring of the original or vice versa
       (baseNorm.includes(candNorm) && wordCount > 8) ||
       candNorm.includes(baseNorm));
 
   if (!candNorm || tooLong || tooSimilar) {
     // Force a compressed, Google-style query
-    return buildCanonicalFromText(base);
+    return buildGoogleQueryFromText(base);
   }
 
   return candNorm;
 }
 
+// Simple slug generator from google-style query
+function slugFromQuery(text) {
+  const safe = (text || "").toString().toLowerCase().trim();
+  if (!safe) return "";
+
+  return safe
+    .replace(/[^a-z0-9\s]/g, " ") // keep alnum + space
+    .trim()
+    .split(/\s+/)
+    .slice(0, 12)
+    .join("-")
+    .replace(/-+/g, "-");
+}
+
 // Fallback if OpenAI fails
 function buildFallback(rawInput, reason, wasTruncated) {
   const safeInput = (rawInput || "").toString().trim();
-  const canonical = buildCanonicalFromText(safeInput);
+  const googleQuery = buildGoogleQueryFromText(safeInput);
+  const slug = slugFromQuery(googleQuery);
 
   const capsule =
     "No answer is available right now because the engine could not complete your request safely. Try again in a moment or simplify the question.";
   const mini =
     "The capsule engine had a technical or network issue while processing this question. If the problem continues, review logs and confirm the API key, model, and network configuration.";
+  const nbq =
+    "What is the very next detail about this situation you would want answered?";
 
   return {
     raw_input: safeInput,
-    canonical_query: canonical,
+    cleaned_question: safeInput,
+    google_style_query: googleQuery,
     answer_capsule_25w: capsule,
     mini_answer: mini,
+    next_best_question: nbq,
+    slug,
     meta: {
       request_id: null,
       engine_version: ENGINE_VERSION,
@@ -173,25 +194,35 @@ You are "InputCheck Raptor-3 Capsule Engine", a capsule-first AI Overview genera
 
 Your ONLY job for each request:
 1) Read the user's raw_input.
-2) Convert it into ONE short Google-style search query ("canonical_query").
-3) Answer that query with ONE snippet-ready answer capsule (~20–25 words) and ONE short mini-answer (3–5 sentences).
+2) Rewrite it as ONE clear, single-focus question ("cleaned_question").
+3) Convert that into ONE short Google-style search query ("google_style_query").
+4) Answer that query with ONE snippet-ready answer capsule (~20–25 words) and ONE short mini-answer (3–5 sentences).
+5) Suggest ONE "next_best_question" that would naturally follow.
+6) Create a short URL slug based on the google_style_query.
 
-Rules for "canonical_query":
+Rules for "cleaned_question":
+- 1–2 sentences, natural and clear.
+- Keep the core entities (age only if crucial, conditions, drugs, job type, amounts) and the main decision or problem.
+- Strip rant, TikTok/YouTube chatter, side comments, and filler like "be honest", "everyone is screaming", "basically".
+- Imagine it as the H1 on a serious guide page.
+
+Rules for "google_style_query":
 - This is NOT the full question. It is a SHORT search phrase built from the question.
 - It must ALWAYS be shorter than raw_input and must never simply copy or lightly rephrase the full sentence.
 - 3–10 words, all lowercase.
 - Only letters, numbers, spaces, and an optional question mark at the end.
-- Strip personal chatter and platforms: remove age, "i / my / me", TikTok, YouTube, etc.
-- Keep only: main condition or entity + key decision or problem.
+- Remove personal pronouns and platforms: drop "i", "my", "me", "tiktok", "youtube", etc.
+- Keep: main condition/entity + key decision or comparison.
 - Example transforms:
   - raw_input: "I’m 52 with borderline diabetes and high cholesterol. TikTok says Ozempic and GLP-1 shots are a shortcut, but my doctor wants me to focus on diet and exercise first. Is it smarter to push for Ozempic now or stick with lifestyle changes only?"
-  - canonical_query: "borderline diabetes ozempic vs lifestyle changes"
+  - cleaned_question: "For a 52-year-old with borderline diabetes and high cholesterol, is it smarter to add Ozempic now or focus on diet and exercise first?"
+  - google_style_query: "borderline diabetes ozempic vs lifestyle changes"
   - raw_input: "I’m 45 with a 6% mortgage and some extra cash each month. Is it smarter to pay extra on the mortgage or invest?"
-  - canonical_query: "6 percent mortgage vs investing"
-- If your first draft of canonical_query is more than 10 words OR looks very similar to raw_input, you MUST rewrite it until it is a compact phrase like the examples above.
+  - google_style_query: "6 percent mortgage vs investing"
+- If your first draft of google_style_query is more than 10 words OR looks very similar to raw_input, you MUST rewrite it until it is a compact phrase like the examples above.
 
 Rules for "answer_capsule_25w":
-- ONE sentence, roughly 20–25 words, that directly answers the canonical_query.
+- ONE sentence, roughly 20–25 words, that directly answers the google_style_query.
 - For yes/no-style questions, start with an explicit stance:
   - "Yes, ...", "No, ...", or "It depends, but generally ...".
 - Include at least one key condition, trade-off, or caveat when relevant.
@@ -205,6 +236,15 @@ Rules for "mini_answer":
 - One main idea per sentence. No bullets, no markdown, no rhetorical questions.
 - Do NOT include URLs.
 
+Rules for "next_best_question":
+- One natural-language question that goes one layer deeper on the same entities or decision.
+- It should be something that could stand alone as a strong follow-up Q&A node.
+
+Rules for "slug":
+- Lowercase, URL-safe handle based on the google_style_query.
+- Kebab-case: words separated by hyphens, no punctuation.
+- Example: google_style_query "borderline diabetes ozempic vs lifestyle changes" -> slug "borderline-diabetes-ozempic-vs-lifestyle-changes".
+
 Safety:
 - For health, legal, financial, or other high-stakes topics, keep guidance general, avoid detailed how-to instructions, and advise consulting qualified professionals.
 
@@ -212,9 +252,12 @@ You must return a SINGLE JSON object with EXACTLY this shape:
 
 {
   "raw_input": "string",
-  "canonical_query": "string",
+  "cleaned_question": "string",
+  "google_style_query": "string",
   "answer_capsule_25w": "string",
-  "mini_answer": "string"
+  "mini_answer": "string",
+  "next_best_question": "string",
+  "slug": "string"
 }
 
 Do NOT add or remove keys.
@@ -241,7 +284,7 @@ Do NOT include any extra text, comments, or markdown.
         response_format: { type: "json_object" },
         temperature: 0.1,
         top_p: 0.8,
-        max_tokens: 400,
+        max_tokens: 500,
         messages: [
           { role: "system", content: systemPrompt },
           {
@@ -314,27 +357,36 @@ Do NOT include any extra text, comments, or markdown.
     }
 
     // Coerce and backfill fields
-    const canonicalRaw = (payload.canonical_query || "").toString().trim();
+    const cleanedRaw = (payload.cleaned_question || "").toString().trim();
+    const googleRaw = (payload.google_style_query || "").toString().trim();
     const capsuleRaw = (payload.answer_capsule_25w || "").toString().trim();
     const miniRaw = (payload.mini_answer || "").toString().trim();
+    const nbqRaw = (payload.next_best_question || "").toString().trim();
+    const slugRaw = (payload.slug || "").toString().trim();
 
-    const canonical_query = normalizeCanonical(truncated, canonicalRaw);
-
+    const cleaned_question = cleanedRaw || truncated;
+    const google_style_query = normalizeGoogleQuery(truncated, googleRaw);
     const answer_capsule_25w =
       capsuleRaw ||
       "No capsule answer was generated. Try asking the question more directly or run the engine again.";
-
     const mini_answer =
       miniRaw ||
       "The engine did not return a full mini answer for this question. Consider re-running the request or simplifying the input for clearer processing.";
+    const next_best_question =
+      nbqRaw ||
+      "What is the very next detail you would want answered about this situation?";
+    const slug = slugRaw || slugFromQuery(google_style_query);
 
     const processing_time_ms = Date.now() - startTime;
 
     const responseBody = {
       raw_input,
-      canonical_query,
+      cleaned_question,
+      google_style_query,
       answer_capsule_25w,
       mini_answer,
+      next_best_question,
+      slug,
       meta: {
         request_id: reqId,
         engine_version: ENGINE_VERSION,
