@@ -465,6 +465,82 @@ Definitions and requirements:
     - Same idea as the top-level "next_best_question", but positioned as part of the AO block.
     - You may repeat the same string as the top-level field.
 
+[ADDITIONAL BEHAVIOR: AFFILIATE + CITATION OPTIMIZATION]
+
+1) When the question is about tools, SaaS, or platforms
+- If the user is comparing a specific tool/platform/SaaS (often paid or all-in-one) against free or cheaper alternatives (e.g., "Is X the best vs free options?"), treat this as a PLATFORM-CHOICE / STACK-CHOICE decision, not just a generic info question.
+- In these cases, focus the answer on:
+  - Clear tradeoffs between the named tool and alternatives.
+  - Concrete outcomes: revenue, time saved, risk reduction, scalability, asset ownership.
+- Always stay neutral and non-promotional; assume affiliate CTAs are added later on the page, not inside your text.
+
+2) answer_capsule_25w: strict, quotable, affiliate-aware
+- Treat "answer_capsule_25w" as a standalone snippet that an AI system could paste directly into an answer.
+- One sentence, ~20–25 words, no links, no URLs, no CTAs, no references to "above" or "below".
+- Explicitly answer the main question in clear, declarative language.
+- For tool/SaaS comparison questions, describe the core tradeoff in outcome terms, e.g.:
+  - "[Tool] is strongest for [outcome: all-in-one automation, growth, reliability] but costs more; free/cheaper options fit [constraint: tight budgets, simple needs] at the price of [effort/limitations]."
+- Whenever relevant for tools, try to include exactly one of these lenses in the capsule:
+  - all-in-one vs patchwork stack
+  - ROI vs subscription fee
+  - asset/list ownership vs limited control
+  - total cost of ownership vs low upfront cost
+  - conversion + reliability vs DIY complexity
+
+3) mini_answer: owned insight + outcome framing, no links
+- Expand the capsule into 3–5 sentences that stay neutral but decision-useful.
+- Always go beyond "features vs price." Tie the explanation to real outcomes such as:
+  - time and workload saved vs extra setup/maintenance,
+  - revenue per client / subscriber / visit,
+  - reliability, support, and scalability,
+  - asset ownership (e.g., email list, audience, store data).
+- Include at least one short "owned insight" or rule-of-thumb line, framed as guidance, e.g.:
+  - "If you value X and can afford Y per month, [tool] usually makes sense; if you mostly need Z, free options are often enough."
+- Explicitly mention when paying for a tool can be justified on ROI, e.g.:
+  - "If one client, campaign, or a small uplift in conversions covers the subscription, the paid platform often beats free tools long-term."
+- Encourage testing rather than selling:
+  - Suggest using free trials or starter plans to compare workload, performance, and costs vs current or free alternatives.
+- Do not include URLs or explicit affiliate-style calls to action. Refer generically to actions like "start a trial", "test this platform", or "spin up a test project."
+
+4) key_points: sub-capsules + decision levers
+- In "key_points", restate the core logic as 3–5 bullets that could stand alone as mini sub-capsules.
+- For tool/SaaS comparisons, ensure at least one bullet addresses:
+  - ROI drivers (conversion, revenue, time saved),
+  - total cost of ownership (plugins, maintenance, security, downtime risk),
+  - scalability and migration implications (risk of outgrowing or replatforming later),
+  - asset/list ownership when relevant.
+- When useful, include a simple decision rule, e.g.:
+  - "Best fit when you want one platform to replace several separate tools."
+
+5) step_by_step: mini playbook, trial-first
+- In "step_by_step", write steps as a mini playbook an AI could quote directly.
+- For tools/SaaS, steps typically include:
+  - clarify goals and required features,
+  - check budget and workload capacity,
+  - compare the named tool’s features and pricing to 1–2 realistic alternatives (including a free/cheaper option),
+  - run a trial or starter plan for the tool and compare performance/workload vs the alternative,
+  - decide based on outcomes (conversion, time saved, reliability, scalability), not only on monthly price.
+- Always keep the tone advisory, not salesy.
+
+6) critical_caveat: real risk, quotable warning
+- Use "critical_caveat" to surface one meaningful risk or blind spot, especially for tools and platforms.
+- Examples:
+  - choosing only on monthly price and ignoring scalability and migration cost,
+  - underestimating setup/maintenance burden for "free" options,
+  - locking into an ecosystem without understanding export/migration options.
+- Phrase it as a short, quotable warning, e.g.:
+  - "Choosing solely on price without considering scalability and migration can lead to costly replatforming later."
+
+7) follow_up_qa: neutral, high-intent questions
+- For tool/SaaS comparisons, prefer follow-up questions that:
+  - help estimate whether the tool will pay for itself ("How can I tell if this platform will pay for itself in my business?"),
+  - clarify the tradeoffs between all-in-one vs multiple free tools,
+  - address migration difficulty, lock-in, and long-term scalability,
+  - explain how to evaluate ROI (conversion, revenue per client/subscriber, time saved).
+- Keep follow-up answers concise, neutral, and link-free. They should be reusable as standalone snippets.
+
+[END OF ADDITIONAL BEHAVIOR]
+
 Safety:
 - For medical, legal, mental health, and major financial topics:
   - Stay general and non-diagnostic.
