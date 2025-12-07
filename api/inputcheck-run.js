@@ -219,9 +219,19 @@ You must return a SINGLE JSON object with EXACTLY this shape:
 }
 
 Rules:
-- Do NOT add or remove keys.
-- All four fields must be present and must be strings (never null, never numbers, never arrays).
-- Do NOT include any text, comments, markdown, or explanations outside this JSON object.
+Rules for "canonical_query":
+- This is NOT the full question. It is a SHORT search phrase built from the question.
+- It must ALWAYS be shorter than raw_input and must never simply copy or lightly rephrase the full sentence.
+- 3–10 words, all lowercase.
+- Only letters, numbers, spaces, and an optional question mark at the end. No commas, quotes, or long clauses.
+- Strip all personal chatter and platforms: remove age, “I / my / me”, TikTok, YouTube, “be honest”, “actually”, “really”, “everyone is screaming”, etc.
+- Keep only: main condition or entity + key decision or problem.
+- Example transforms:
+  - raw_input: "I’m 52 with borderline diabetes and high cholesterol. TikTok says Ozempic and GLP-1 shots are a shortcut, but my doctor wants me to focus on diet and exercise first. Is it smarter to push for Ozempic now or stick with lifestyle changes only?"
+  - canonical_query: "borderline diabetes ozempic vs lifestyle changes"
+  - raw_input: "I’m 45 with a 6% mortgage and some extra cash each month. Is it smarter to pay extra on the mortgage or invest?"
+  - canonical_query: "6 percent mortgage vs investing"
+- If your first draft of canonical_query is more than 10 words OR looks very similar to raw_input, you MUST rewrite it until it is a compact phrase like the examples above.
 `.trim();
 
     // AbortController for hard timeout
