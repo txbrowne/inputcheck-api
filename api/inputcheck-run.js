@@ -20,7 +20,7 @@ const REQUEST_TIMEOUT_MS = parseInt(
   10
 );
 
-const ENGINE_VERSION = "inputcheck-raptor-3.2.0";
+const ENGINE_VERSION = "inputcheck-raptor-3.3.0";
 
 // ----------------------------
 // Helpers
@@ -96,26 +96,29 @@ function slugFromQuery(text) {
     .replace(/-+/g, "-");
 }
 
-// Fallback if OpenAI fails
+// Fallback if OpenAI fails – ALWAYS fills all fields
 function buildFallback(rawInput, reason, wasTruncated) {
   const safeInput = (rawInput || "").toString().trim();
-  const googleQuery = buildGoogleQueryFromText(safeInput);
-  const slug = slugFromQuery(googleQuery);
+  const cleaned_question = safeInput || "";
+  const google_style_query = buildGoogleQueryFromText(cleaned_question);
+  const canonical_query = google_style_query;
+  const slug = slugFromQuery(google_style_query);
 
-  const capsule =
+  const answer_capsule_25w =
     "No answer is available right now because the engine could not complete your request safely. Try again in a moment or simplify the question.";
-  const mini =
+  const mini_answer =
     "The capsule engine had a technical or network issue while processing this question. If the problem continues, review logs and confirm the API key, model, and network configuration.";
-  const nbq =
-    "What is the very next detail about this situation you would want answered?";
+  const next_best_question =
+    "What is the very next detail about this decision you would want answered?";
 
   return {
     raw_input: safeInput,
-    cleaned_question: safeInput,
-    google_style_query: googleQuery,
-    answer_capsule_25w: capsule,
-    mini_answer: mini,
-    next_best_question: nbq,
+    cleaned_question,
+    google_style_query,
+    canonical_query,
+    answer_capsule_25w,
+    mini_answer,
+    next_best_question,
     slug,
     meta: {
       request_id: null,
@@ -198,7 +201,6 @@ Your ONLY job for each request:
 3) Convert that into ONE short Google-style search query ("google_style_query").
 4) Answer that query with ONE snippet-ready answer capsule (~20–25 words) and ONE short mini-answer (3–5 sentences).
 5) Suggest ONE "next_best_question" that would naturally follow.
-6) Create a short URL slug based on the google_style_query.
 
 Rules for "cleaned_question":
 - 1–2 sentences, natural and clear.
@@ -240,14 +242,6 @@ Rules for "next_best_question":
 - One natural-language question that goes one layer deeper on the same entities or decision.
 - It should be something that could stand alone as a strong follow-up Q&A node.
 
-Rules for "slug":
-- Lowercase, URL-safe handle based on the google_style_query.
-- Kebab-case: words separated by hyphens, no punctuation.
-- Example: google_style_query "borderline diabetes ozempic vs lifestyle changes" -> slug "borderline-diabetes-ozempic-vs-lifestyle-changes".
-
-Safety:
-- For health, legal, financial, or other high-stakes topics, keep guidance general, avoid detailed how-to instructions, and advise consulting qualified professionals.
-
 You must return a SINGLE JSON object with EXACTLY this shape:
 
 {
@@ -256,8 +250,7 @@ You must return a SINGLE JSON object with EXACTLY this shape:
   "google_style_query": "string",
   "answer_capsule_25w": "string",
   "mini_answer": "string",
-  "next_best_question": "string",
-  "slug": "string"
+  "next_best_question": "string"
 }
 
 Do NOT add or remove keys.
@@ -356,26 +349,40 @@ Do NOT include any extra text, comments, or markdown.
       return;
     }
 
+    // ----------------------------
     // Coerce and backfill fields
+    // ----------------------------
     const cleanedRaw = (payload.cleaned_question || "").toString().trim();
     const googleRaw = (payload.google_style_query || "").toString().trim();
     const capsuleRaw = (payload.answer_capsule_25w || "").toString().trim();
     const miniRaw = (payload.mini_answer || "").toString().trim();
     const nbqRaw = (payload.next_best_question || "").toString().trim();
-    const slugRaw = (payload.slug || "").toString().trim();
 
+    // cleaned_question falls back to truncated input
     const cleaned_question = cleanedRaw || truncated;
-    const google_style_query = normalizeGoogleQuery(truncated, googleRaw);
+
+    // google_style_query is normalized and compressed
+    const google_style_query = normalizeGoogleQuery(
+      cleaned_question,
+      googleRaw || cleaned_question
+    );
+
+    // canonical_query alias for compatibility with old UI
+    const canonical_query = google_style_query;
+
     const answer_capsule_25w =
       capsuleRaw ||
       "No capsule answer was generated. Try asking the question more directly or run the engine again.";
+
     const mini_answer =
       miniRaw ||
       "The engine did not return a full mini answer for this question. Consider re-running the request or simplifying the input for clearer processing.";
+
     const next_best_question =
       nbqRaw ||
       "What is the very next detail you would want answered about this situation?";
-    const slug = slugRaw || slugFromQuery(google_style_query);
+
+    const slug = slugFromQuery(google_style_query);
 
     const processing_time_ms = Date.now() - startTime;
 
@@ -383,6 +390,7 @@ Do NOT include any extra text, comments, or markdown.
       raw_input,
       cleaned_question,
       google_style_query,
+      canonical_query,
       answer_capsule_25w,
       mini_answer,
       next_best_question,
