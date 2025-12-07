@@ -1,584 +1,739 @@
-// api/inputcheck-run.js
-// Input Check v1.5 – live engine calling OpenAI and returning the fixed JSON contract.
+<!-- INPUT CHECK CONSOLE – v1.4 live engine -->
+<meta name="sge:summary" content="Input Check cleans messy questions into a clear query, answer capsule, mini answer, and next best question using a fixed JSON contract.">
 
-"use strict";
+<link href="https://fonts.googleapis.com/css2?family=Anton&display=swap" rel="stylesheet">
 
-// ----------------------------
-// Config
-// ----------------------------
-const OPENAI_MODEL =
-  process.env.INPUTCHECK_MODEL || "gpt-4.1-mini";
-const OPENAI_API_URL =
-  process.env.OPENAI_API_URL || "https://api.openai.com/v1/chat/completions";
-
-// Hard guardrails
-const INPUTCHECK_MAX_CHARS = parseInt(
-  process.env.INPUTCHECK_MAX_CHARS || "2000",
-  10
-);
-const REQUEST_TIMEOUT_MS = parseInt(
-  process.env.INPUTCHECK_TIMEOUT_MS || "20000",
-  10
-);
-const ENGINE_VERSION = "inputcheck-v1.5.0";
-
-// ----------------------------
-// Helpers
-// ----------------------------
-function setCorsHeaders(res) {
-  // If you ever want to lock this down, replace "*" with your domain.
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-}
-
-// Build a safe fallback payload if OpenAI fails or we hit an internal error
-function buildFallback(rawInput, reason) {
-  const safeInput = (rawInput || "").toString().trim();
-  const cleaned = safeInput || "";
-
-  const mini =
-    "Input Check couldn’t reach the engine right now (" +
-    reason +
-    "). Please try again shortly.";
-
-  const baseText = cleaned + (cleaned ? "\n\n" : "") + mini;
-
-  return {
-    inputcheck: {
-      cleaned_question: cleaned,
-      canonical_query: cleaned, // fallback: mirror cleaned_question
-      flags: ["backend_error"],
-      score_10: 0,
-      grade_label: "Engine unavailable",
-      clarification_required: false,
-      next_best_question:
-        "Try your question again in a moment — the engine had a connection issue.",
-      engine_version: ENGINE_VERSION
-    },
-    mini_answer: mini,
-    vault_node: {
-      slug: "inputcheck-backend-error",
-      vertical_guess: "general",
-      cmn_status: "draft",
-      public_url: null
-    },
-    share_blocks: {
-      answer_only: baseText,
-      answer_with_link:
-        baseText +
-        "\n\nRun this through Input Check at https://theanswervault.com/"
-    },
-    decision_frame: {
-      question_type: "unknown",
-      pros: [],
-      cons: [],
-      personal_checks: []
-    },
-    intent_map: {
-      primary_intent: cleaned,
-      sub_intents: []
-    },
-    action_protocol: {
-      type: "none",
-      steps: [],
-      estimated_effort: "",
-      recommended_tools: []
-    },
-    // v1.4+ fields
-    answer_capsule_25w: "",
-    owned_insight: ""
-  };
-}
-
-// Simple request ID for logging
-function makeRequestId() {
-  return (
-    "ic_" +
-    Date.now().toString(36) +
-    "_" +
-    Math.random().toString(36).slice(2, 8)
-  );
-}
-
-// Ensure new blocks are always present and minimally sane
-function normalizePayload(payload, fallbackBaseQuestion) {
-  const baseQuestion = (fallbackBaseQuestion || "").toString();
-
-  if (!payload || typeof payload !== "object") {
-    return buildFallback(baseQuestion, "invalid payload shape");
+<style>
+  .ic-page {
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
+      "Segoe UI", sans-serif;
+    background: #f5f7fb;
+    min-height: 100vh;
   }
-
-  // ---------- inputcheck ----------
-  if (!payload.inputcheck || typeof payload.inputcheck !== "object") {
-    payload.inputcheck = {
-      cleaned_question: baseQuestion,
-      canonical_query: baseQuestion,
-      flags: ["backend_error"],
-      score_10: 0,
-      grade_label: "Engine unavailable",
-      clarification_required: false,
-      next_best_question:
-        "Try your question again in a moment — the engine returned an incomplete result.",
-      engine_version: ENGINE_VERSION
-    };
-  } else {
-    payload.inputcheck.cleaned_question =
-      (payload.inputcheck.cleaned_question || baseQuestion).toString();
-
-    // Ensure canonical_query exists and is a simple string
-    let cq = payload.inputcheck.canonical_query;
-    if (typeof cq !== "string" || !cq.trim()) {
-      cq = payload.inputcheck.cleaned_question || baseQuestion;
+  .ic-hero-wrap {
+    padding: 72px 24px 32px;
+    display: flex;
+    justify-content: center;
+  }
+  .ic-hero {
+    max-width: 960px;
+    width: 100%;
+    text-align: center;
+  }
+  .ic-brand-row {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    margin-bottom: 10px;
+  }
+  .ic-brand-icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 18px;
+    background: #2563ff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 16px 40px rgba(37, 99, 255, 0.55);
+  }
+  .ic-brand-icon svg {
+    width: 24px;
+    height: 24px;
+    color: #ffffff;
+  }
+  .ic-brand-text {
+    font-family: "Anton", system-ui, -apple-system, BlinkMacSystemFont,
+      "SF Pro Text", "Segoe UI", sans-serif;
+    font-weight: 400;
+    font-size: clamp(2.4rem, 3.4vw, 2.9rem);
+    letter-spacing: 0.03em;
+    color: #111827;
+    line-height: 1;
+  }
+  .ic-tagline {
+    margin: 0 0 30px;
+    font-family: "Anton", system-ui, -apple-system, BlinkMacSystemFont,
+      "SF Pro Text", "Segoe UI", sans-serif;
+    font-weight: 400;
+    font-size: clamp(1.1rem, 1.9vw, 1.3rem);
+    letter-spacing: 0.05em;
+    color: #4b5563;
+  }
+  .ic-search-shell {
+    margin: 0 auto 16px;
+    width: 100%;
+    max-width: 960px;
+    background: #ffffff;
+    border-radius: 9999px;
+    box-shadow:
+      0 20px 70px rgba(15, 23, 42, 0.18),
+      0 0 0 1px rgba(148, 163, 184, 0.3);
+    padding: 14px 18px 14px 30px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    box-sizing: border-box;
+  }
+  .ic-search-input {
+    border: none;
+    outline: none;
+    flex: 1;
+    font-size: 1.05rem;
+    color: #111827;
+    background: transparent;
+  }
+  .ic-search-input::placeholder {
+    color: #9ca3af;
+  }
+  .ic-search-button {
+    border: none;
+    outline: none;
+    cursor: pointer;
+    width: 50px;
+    height: 50px;
+    border-radius: 9999px;
+    background: #2563ff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 12px 32px rgba(37, 99, 255, 0.55);
+    flex-shrink: 0;
+    transition: transform 0.14s ease-out, box-shadow 0.14s ease-out,
+      background 0.14s ease-out;
+  }
+  .ic-search-button svg {
+    width: 22px;
+    height: 22px;
+    color: #ffffff;
+  }
+  .ic-search-button:hover {
+    transform: translateY(-1px);
+    background: #1d4ed8;
+    box-shadow: 0 18px 46px rgba(37, 99, 255, 0.75);
+  }
+  .ic-subline {
+    font-size: 0.95rem;
+    color: #4b5563;
+    margin-top: 8px;
+  }
+  @media (max-width: 640px) {
+    .ic-hero-wrap {
+      padding: 52px 16px 24px;
     }
-    payload.inputcheck.canonical_query = cq.toString().trim();
-
-    payload.inputcheck.flags = Array.isArray(payload.inputcheck.flags)
-      ? payload.inputcheck.flags
-      : [];
-    payload.inputcheck.score_10 =
-      typeof payload.inputcheck.score_10 === "number"
-        ? payload.inputcheck.score_10
-        : 0;
-    payload.inputcheck.grade_label =
-      payload.inputcheck.grade_label || "ok";
-    payload.inputcheck.clarification_required = Boolean(
-      payload.inputcheck.clarification_required
-    );
-    payload.inputcheck.next_best_question =
-      payload.inputcheck.next_best_question || "";
-    payload.inputcheck.engine_version =
-      payload.inputcheck.engine_version || ENGINE_VERSION;
-  }
-
-  // ---------- mini_answer ----------
-  if (typeof payload.mini_answer !== "string") {
-    payload.mini_answer =
-      "No mini answer available due to an engine error. Please run this question again.";
-  }
-
-  // ---------- vault_node ----------
-  if (!payload.vault_node || typeof payload.vault_node !== "object") {
-    payload.vault_node = {
-      slug: "inputcheck-fallback",
-      vertical_guess: "general",
-      cmn_status: "draft",
-      public_url: null
-    };
-  } else {
-    payload.vault_node.slug =
-      (payload.vault_node.slug || "inputcheck-fallback").toString();
-    payload.vault_node.vertical_guess =
-      (payload.vault_node.vertical_guess || "general").toString();
-    payload.vault_node.cmn_status =
-      payload.vault_node.cmn_status || "draft";
-    if (
-      typeof payload.vault_node.public_url !== "string" &&
-      payload.vault_node.public_url !== null
-    ) {
-      payload.vault_node.public_url = null;
+    .ic-search-shell {
+      padding: 12px 14px 12px 22px;
+      border-radius: 26px;
+    }
+    .ic-search-button {
+      width: 46px;
+      height: 46px;
     }
   }
 
-  // ---------- share_blocks ----------
-  if (!payload.share_blocks || typeof payload.share_blocks !== "object") {
-    const baseText =
-      payload.inputcheck.cleaned_question +
-      "\n\n" +
-      payload.mini_answer;
-    payload.share_blocks = {
-      answer_only: baseText,
-      answer_with_link:
-        baseText +
-        "\n\nRun this through Input Check at https://theanswervault.com/"
-    };
-  } else {
-    const cqText = payload.inputcheck.cleaned_question;
-    const ma = payload.mini_answer;
-    const defaultBase = cqText + "\n\n" + ma;
-
-    payload.share_blocks.answer_only =
-      payload.share_blocks.answer_only || defaultBase;
-
-    payload.share_blocks.answer_with_link =
-      payload.share_blocks.answer_with_link ||
-      defaultBase +
-        "\n\nRun this through Input Check at https://theanswervault.com/";
+  /* RESULTS AREA */
+  .ic-results-wrap {
+    display: none;
+    justify-content: center;
+    padding: 0 24px 72px;
   }
-
-  // ---------- decision_frame ----------
-  if (!payload.decision_frame || typeof payload.decision_frame !== "object") {
-    payload.decision_frame = {
-      question_type: "unknown",
-      pros: [],
-      cons: [],
-      personal_checks: []
-    };
-  } else {
-    payload.decision_frame.question_type =
-      payload.decision_frame.question_type || "unknown";
-
-    payload.decision_frame.pros = Array.isArray(payload.decision_frame.pros)
-      ? payload.decision_frame.pros
-      : [];
-    payload.decision_frame.cons = Array.isArray(payload.decision_frame.cons)
-      ? payload.decision_frame.cons
-      : [];
-    payload.decision_frame.personal_checks = Array.isArray(
-      payload.decision_frame.personal_checks
-    )
-      ? payload.decision_frame.personal_checks
-      : [];
+  .ic-results-wrap.visible {
+    display: flex;
   }
-
-  // ---------- intent_map ----------
-  if (!payload.intent_map || typeof payload.intent_map !== "object") {
-    payload.intent_map = {
-      primary_intent: payload.inputcheck.cleaned_question || baseQuestion,
-      sub_intents: []
-    };
-  } else {
-    payload.intent_map.primary_intent =
-      payload.intent_map.primary_intent ||
-      payload.inputcheck.cleaned_question ||
-      baseQuestion ||
-      "";
-    payload.intent_map.sub_intents = Array.isArray(
-      payload.intent_map.sub_intents
-    )
-      ? payload.intent_map.sub_intents
-      : [];
+  .ic-results {
+    max-width: 960px;
+    width: 100%;
   }
-
-  // ---------- action_protocol ----------
-  if (!payload.action_protocol || typeof payload.action_protocol !== "object") {
-    payload.action_protocol = {
-      type: "none",
-      steps: [],
-      estimated_effort: "",
-      recommended_tools: []
-    };
-  } else {
-    payload.action_protocol.type =
-      payload.action_protocol.type || "none";
-    payload.action_protocol.steps = Array.isArray(
-      payload.action_protocol.steps
-    )
-      ? payload.action_protocol.steps
-      : [];
-    payload.action_protocol.estimated_effort =
-      payload.action_protocol.estimated_effort || "";
-    payload.action_protocol.recommended_tools = Array.isArray(
-      payload.action_protocol.recommended_tools
-    )
-      ? payload.action_protocol.recommended_tools
-      : [];
+  .ic-card {
+    border-radius: 24px;
+    background: #ffffff;
+    box-shadow:
+      0 18px 60px rgba(15, 23, 42, 0.12),
+      0 0 0 1px rgba(148, 163, 184, 0.25);
+    padding: 24px 24px 28px;
+    box-sizing: border-box;
+    color: #0f172a;
   }
-
-  // ---------- answer_capsule_25w ----------
-  if (typeof payload.answer_capsule_25w !== "string") {
-    // Simple default: first ~25 words of mini_answer, or cleaned_question
-    const source =
-      typeof payload.mini_answer === "string" &&
-      payload.mini_answer.trim().length > 0
-        ? payload.mini_answer.trim()
-        : payload.inputcheck.cleaned_question || baseQuestion;
-
-    const words = source.split(/\s+/).slice(0, 25);
-    payload.answer_capsule_25w = words.join(" ");
-  } else {
-    payload.answer_capsule_25w = payload.answer_capsule_25w.toString().trim();
+  .ic-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 18px;
   }
-
-  // ---------- owned_insight ----------
-  if (typeof payload.owned_insight !== "string") {
-    payload.owned_insight = "";
-  } else {
-    payload.owned_insight = payload.owned_insight.toString().trim();
+  .ic-card-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #64748b;
   }
-
-  return payload;
-}
-
-// ----------------------------
-// Main handler
-// ----------------------------
-export default async function handler(req, res) {
-  const reqId = makeRequestId();
-  setCorsHeaders(res);
-
-  // Handle browser preflight
-  if (req.method === "OPTIONS") {
-    res.status(200).end();
-    return;
+  .ic-meta-line {
+    font-size: 0.8rem;
+    color: #6b7280;
+    margin-top: 2px;
   }
-
-  if (req.method !== "POST") {
-    res.status(405).json({ error: "Method not allowed" });
-    return;
+  .ic-score-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: #eff6ff;
+    color: #1d4ed8;
+    font-size: 0.8rem;
+    font-weight: 600;
+    white-space: nowrap;
   }
-
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    console.error(`[${reqId}] Missing OPENAI_API_KEY`);
-    const fallback = buildFallback("", "missing OPENAI_API_KEY on server");
-    res.status(200).json(fallback);
-    return;
+  .ic-score-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: #22c55e;
   }
-
-  const body = req.body || {};
-  let raw_input = "";
-
-  try {
-    raw_input = (body.raw_input || "").toString();
-  } catch (err) {
-    console.error(`[${reqId}] Invalid raw_input in body:`, err);
-    res.status(400).json({ error: "raw_input must be a string" });
-    return;
+  .ic-section {
+    margin-bottom: 18px;
   }
-
-  raw_input = raw_input.trim();
-
-  if (!raw_input) {
-    res.status(400).json({ error: "raw_input is required" });
-    return;
+  .ic-section:last-child {
+    margin-bottom: 0;
   }
-
-  // Enforce max length to avoid runaway cost / prompt injection
-  let truncated = raw_input;
-  let wasTruncated = false;
-  if (truncated.length > INPUTCHECK_MAX_CHARS) {
-    truncated = truncated.slice(0, INPUTCHECK_MAX_CHARS);
-    wasTruncated = true;
+  .ic-section-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #9ca3af;
+    margin-bottom: 6px;
   }
+  .ic-section-body {
+    font-size: 0.95rem;
+    line-height: 1.55;
+    color: #111827;
+  }
+  .ic-raw-clean-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .ic-bubble {
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    font-size: 0.9rem;
+    color: #111827;
+  }
+  .ic-bubble-title {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #9ca3af;
+    margin-bottom: 4px;
+  }
+  .ic-flag-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    background: #fef3c7;
+    color: #92400e;
+    margin-right: 6px;
+    margin-top: 4px;
+  }
+  .ic-two-col {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+  .ic-list {
+    padding-left: 18px;
+    margin: 6px 0 0;
+  }
+  .ic-list li {
+    margin-bottom: 4px;
+  }
+  .ic-owned {
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: #ecfdf3;
+    border: 1px solid #bbf7d0;
+    font-size: 0.9rem;
+  }
+  .ic-copy-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 18px;
+  }
+  .ic-btn {
+    border: none;
+    outline: none;
+    cursor: pointer;
+    border-radius: 999px;
+    padding: 8px 14px;
+    font-size: 0.82rem;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .ic-btn-primary {
+    background: #2563ff;
+    color: #ffffff;
+    box-shadow: 0 10px 24px rgba(37, 99, 255, 0.55);
+  }
+  .ic-btn-ghost {
+    background: rgba(15, 23, 42, 0.02);
+    color: #111827;
+    border: 1px solid #e5e7eb;
+  }
+  .ic-copy-status {
+    font-size: 0.8rem;
+    color: #22c55e;
+    margin-left: 4px;
+  }
+  .ic-json-block {
+    margin-top: 14px;
+    display: none;
+  }
+  .ic-json-block.visible {
+    display: block;
+  }
+  .ic-json-pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+      "Liberation Mono", "Courier New", monospace;
+    font-size: 0.82rem;
+    background: #020617;
+    color: #e5e7eb;
+    padding: 12px;
+    border-radius: 12px;
+    max-height: 320px;
+    overflow: auto;
+  }
+  @media (max-width: 768px) {
+    .ic-raw-clean-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .ic-two-col {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .ic-card {
+      padding: 18px 16px 22px;
+    }
+  }
+</style>
 
-  try {
-    const systemPrompt = `
-You are "Input Check v1.5", the question-cleaning and mini-answer engine for theanswervault.com.
+<div class="ic-page">
+  <section class="ic-hero-wrap">
+    <div class="ic-hero">
+      <div class="ic-brand-row">
+        <div class="ic-brand-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M19.5 5.75 9.75 15.5l-5.25-5.25 1.5-1.5 3.75 3.75 8.25-8.25z"
+            />
+          </svg>
+        </div>
+        <div class="ic-brand-text">Input Check</div>
+      </div>
+      <p class="ic-tagline">Ask big questions. Get capsule-ready answers.</p>
 
-Your job is to take a messy, real-world user question and:
+      <div class="ic-search-shell">
+        <input
+          class="ic-search-input"
+          type="text"
+          id="ic-input"
+          placeholder="pay off 18% credit card debt or invest extra cash"
+          autocomplete="off"
+        />
+        <button class="ic-search-button" type="button" id="ic-run-btn" aria-label="Run Input Check">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79L19 20.49 20.49 19 15.5 14zm-6 0C8.01 14 6 11.99 6 9.5S8.01 5 10.5 5 15 7.01 15 9.5 12.99 14 10.5 14z"
+            />
+          </svg>
+        </button>
+      </div>
 
-1) Produce ONE clear, answerable "cleaned_question" that focuses on a single primary problem/intent.
-2) Produce ONE concise "canonical_query" string that represents how this question would most likely be typed into a Google search box.
-3) Generate an AI-Overview-style "mini_answer" (2–5 sentences) that directly answers the cleaned_question.
-4) Suggest ONE "next_best_question" that naturally follows and could be answered as its own Q&A node.
-5) Detect any "input viruses" in the question (vague scope, stacked asks, missing context, safety risk, off-topic) and encode them as flags.
-6) Provide a simple guess at the vertical/topic and intent for vault routing.
-7) Build three extra structured layers:
-   - "decision_frame" (pros, cons, personal readiness checks),
-   - "intent_map" (primary + sub-intents),
-   - "action_protocol" (a short, ordered next-steps routine).
-8) Create a 25-word "answer_capsule_25w" and an optional "owned_insight" line for deeper, branded context.
+      <p class="ic-subline">
+        Live engine using the v1.4 JSON contract from inputcheck-api.vercel.app.
+      </p>
+    </div>
+  </section>
 
-You must return a SINGLE JSON object with EXACTLY this shape:
+  <section class="ic-results-wrap" id="ic-results-wrap">
+    <div class="ic-results">
+      <div class="ic-card">
+        <div class="ic-card-header">
+          <div>
+            <div class="ic-card-title">Capsule engine result</div>
+            <div class="ic-meta-line" id="ic-meta-line"></div>
+          </div>
+          <div class="ic-score-pill" id="ic-score-pill">
+            <span class="ic-score-dot"></span>
+            <span id="ic-score-text">Engine ready</span>
+          </div>
+        </div>
 
-{
-  "inputcheck": {
-    "cleaned_question": "string",
-    "canonical_query": "string",
-    "flags": ["vague_scope", "stacked_asks", "missing_context", "safety_risk", "off_topic"],
-    "score_10": 0,
-    "grade_label": "string",
-    "clarification_required": false,
-    "next_best_question": "string",
-    "engine_version": "string"
-  },
-  "mini_answer": "string",
-  "vault_node": {
-    "slug": "string",
-    "vertical_guess": "string",
-    "cmn_status": "draft",
-    "public_url": null
-  },
-  "share_blocks": {
-    "answer_only": "string",
-    "answer_with_link": "string"
-  },
-  "decision_frame": {
-    "question_type": "string",
-    "pros": [
-      {
-        "label": "string",
-        "reason": "string",
-        "tags": ["string"],
-        "spawn_question_slug": "string"
+        <!-- Question & cleaning -->
+        <div class="ic-section">
+          <div class="ic-section-label">Question & cleaning</div>
+          <div class="ic-raw-clean-grid">
+            <div class="ic-bubble">
+              <div class="ic-bubble-title">Raw input</div>
+              <div id="ic-raw-text"></div>
+            </div>
+            <div class="ic-bubble">
+              <div class="ic-bubble-title">Cleaned question</div>
+              <div id="ic-cleaned-text"></div>
+            </div>
+            <div class="ic-bubble">
+              <div class="ic-bubble-title">Google-style query</div>
+              <div id="ic-canonical-text"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Capsule + mini + next best -->
+        <div class="ic-section">
+          <div class="ic-section-label">Answer capsule (~25 words)</div>
+          <div class="ic-section-body" id="ic-capsule-text"></div>
+        </div>
+
+        <div class="ic-section">
+          <div class="ic-section-label">Mini answer</div>
+          <div class="ic-section-body" id="ic-mini-answer"></div>
+        </div>
+
+        <div class="ic-section">
+          <div class="ic-section-label">Next best question</div>
+          <div class="ic-section-body" id="ic-nbq"></div>
+        </div>
+
+        <!-- Input health & routing -->
+        <div class="ic-section">
+          <div class="ic-section-label">Input health & routing</div>
+          <div class="ic-two-col">
+            <div class="ic-bubble">
+              <div class="ic-bubble-title">Score & grade</div>
+              <div id="ic-score-grade"></div>
+              <div id="ic-flags"></div>
+            </div>
+            <div class="ic-bubble">
+              <div class="ic-bubble-title">Vault routing</div>
+              <div id="ic-vault-routing"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Decision frame -->
+        <div class="ic-section">
+          <div class="ic-section-label">Decision frame</div>
+          <div class="ic-two-col">
+            <div class="ic-bubble">
+              <div class="ic-bubble-title">Question type & pros</div>
+              <div id="ic-question-type"></div>
+              <ul class="ic-list" id="ic-pros-list"></ul>
+            </div>
+            <div class="ic-bubble">
+              <div class="ic-bubble-title">Cons & personal checks</div>
+              <ul class="ic-list" id="ic-cons-list"></ul>
+              <ul class="ic-list" id="ic-checks-list"></ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action protocol -->
+        <div class="ic-section">
+          <div class="ic-section-label">Action protocol</div>
+          <div class="ic-bubble" id="ic-action-protocol"></div>
+        </div>
+
+        <!-- Owned insight -->
+        <div class="ic-section">
+          <div class="ic-section-label">Owned insight</div>
+          <div class="ic-owned" id="ic-owned-insight"></div>
+        </div>
+
+        <!-- Copy + raw JSON -->
+        <div class="ic-copy-row">
+          <button class="ic-btn ic-btn-primary" id="ic-copy-capsule">Copy capsule</button>
+          <button class="ic-btn ic-btn-ghost" id="ic-copy-mini">Copy mini answer</button>
+          <button class="ic-btn ic-btn-ghost" id="ic-toggle-json">Toggle raw JSON</button>
+          <span class="ic-copy-status" id="ic-copy-status"></span>
+        </div>
+
+        <div class="ic-json-block" id="ic-json-block">
+          <pre class="ic-json-pre" id="ic-json-pre"></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+  (function () {
+    const INPUTCHECK_API_URL = "https://inputcheck-api.vercel.app/api/inputcheck-run";
+
+    const inputEl = document.getElementById("ic-input");
+    const runBtn = document.getElementById("ic-run-btn");
+    const resultsWrap = document.getElementById("ic-results-wrap");
+
+    const rawTextEl = document.getElementById("ic-raw-text");
+    const cleanedTextEl = document.getElementById("ic-cleaned-text");
+    const canonicalTextEl = document.getElementById("ic-canonical-text");
+    const capsuleTextEl = document.getElementById("ic-capsule-text");
+    const miniAnswerEl = document.getElementById("ic-mini-answer");
+    const nbqEl = document.getElementById("ic-nbq");
+
+    const metaLineEl = document.getElementById("ic-meta-line");
+    const scoreTextEl = document.getElementById("ic-score-text");
+    const scoreGradeEl = document.getElementById("ic-score-grade");
+    const flagsEl = document.getElementById("ic-flags");
+    const vaultRoutingEl = document.getElementById("ic-vault-routing");
+
+    const qTypeEl = document.getElementById("ic-question-type");
+    const prosListEl = document.getElementById("ic-pros-list");
+    const consListEl = document.getElementById("ic-cons-list");
+    const checksListEl = document.getElementById("ic-checks-list");
+
+    const actionProtocolEl = document.getElementById("ic-action-protocol");
+    const ownedInsightEl = document.getElementById("ic-owned-insight");
+
+    const copyCapsuleBtn = document.getElementById("ic-copy-capsule");
+    const copyMiniBtn = document.getElementById("ic-copy-mini");
+    const toggleJsonBtn = document.getElementById("ic-toggle-json");
+    const copyStatusEl = document.getElementById("ic-copy-status");
+    const jsonBlockEl = document.getElementById("ic-json-block");
+    const jsonPreEl = document.getElementById("ic-json-pre");
+
+    function setLoading(isLoading) {
+      if (!runBtn || !inputEl) return;
+      if (isLoading) {
+        runBtn.dataset.prevHtml = runBtn.innerHTML;
+        runBtn.innerHTML =
+          '<span style="width:16px;height:16px;border-radius:999px;border:2px solid rgba(255,255,255,0.5);border-top-color:#fff;display:inline-block;box-sizing:border-box;animation:ic-spin 0.8s linear infinite;"></span>';
+        runBtn.disabled = true;
+        inputEl.disabled = true;
+      } else {
+        if (runBtn.dataset.prevHtml) {
+          runBtn.innerHTML = runBtn.dataset.prevHtml;
+        }
+        runBtn.disabled = false;
+        inputEl.disabled = false;
       }
-    ],
-    "cons": [
-      {
-        "label": "string",
-        "reason": "string",
-        "tags": ["string"],
-        "spawn_question_slug": "string"
+    }
+
+    async function runInputCheck(rawInput) {
+      const res = await fetch(INPUTCHECK_API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ raw_input: rawInput })
+      });
+
+      if (!res.ok) {
+        throw new Error("InputCheck API error: " + res.status + " " + res.statusText);
       }
-    ],
-    "personal_checks": [
-      {
-        "label": "string",
-        "prompt": "string",
-        "dimension": "string"
+
+      return await res.json();
+    }
+
+    function clearList(el) {
+      while (el.firstChild) el.removeChild(el.firstChild);
+    }
+
+    function renderResult(rawInput, data) {
+      resultsWrap.classList.add("visible");
+
+      const ic = data.inputcheck || {};
+      const df = data.decision_frame || {};
+      const ap = data.action_protocol || {};
+      const vn = data.vault_node || {};
+      const flags = Array.isArray(ic.flags) ? ic.flags : [];
+
+      const cleaned = ic.cleaned_question || rawInput;
+      const canonical = ic.canonical_query || cleaned;
+      const capsule = (typeof data.answer_capsule_25w === "string" && data.answer_capsule_25w.trim())
+        ? data.answer_capsule_25w.trim()
+        : "";
+      const mini = (typeof data.mini_answer === "string" && data.mini_answer.trim())
+        ? data.mini_answer.trim()
+        : "";
+      const nbq = ic.next_best_question || "";
+
+      rawTextEl.textContent = rawInput;
+      cleanedTextEl.textContent = cleaned;
+      canonicalTextEl.textContent = canonical;
+      capsuleTextEl.textContent = capsule || "No capsule generated.";
+      miniAnswerEl.textContent = mini || "No mini answer generated.";
+      nbqEl.textContent = nbq || "None returned.";
+
+      // Meta line, score, grade
+      const engineVersion = ic.engine_version || "inputcheck-v1.4.0";
+      const score = typeof ic.score_10 === "number" ? ic.score_10 : null;
+      const grade = ic.grade_label || "";
+      metaLineEl.textContent = engineVersion;
+      scoreTextEl.textContent = score !== null ? `${score}/10 · ${grade || "ungraded"}` : "Engine result";
+
+      if (score !== null) {
+        scoreGradeEl.textContent = `${score}/10 · ${grade || "ungraded"}`;
+      } else {
+        scoreGradeEl.textContent = "No score returned.";
       }
-    ]
-  },
-  "intent_map": {
-    "primary_intent": "string",
-    "sub_intents": ["string"]
-  },
-  "action_protocol": {
-    "type": "string",
-    "steps": ["string"],
-    "estimated_effort": "string",
-    "recommended_tools": ["string"]
-  },
-  "answer_capsule_25w": "string",
-  "owned_insight": "string"
-}
 
-CANONICAL_QUERY RULES
+      // Flags
+      flagsEl.innerHTML = "";
+      if (flags.length) {
+        flags.forEach((f) => {
+          const span = document.createElement("span");
+          span.className = "ic-flag-pill";
+          span.textContent = f;
+          flagsEl.appendChild(span);
+        });
+      } else {
+        flagsEl.textContent = "no_flags";
+      }
 
-- "canonical_query" is a short, Google-style search phrase derived from the cleaned_question.
-- It should look like what a user would actually type into the Google search bar.
-- 3–10 words, lower friction, minimal punctuation.
-- Avoid pronouns like "I", "my", "me" unless truly necessary.
-- Good examples:
-  - "jeep jl front passenger floor leak fix"
-  - "is smp better than hair transplant"
-  - "how many hours of sleep adult women need"
-- Bad examples:
-  - Full sentences with extra commentary.
-  - Including "according to inputcheck" or references to the engine.
+      // Vault routing
+      const slug = vn.slug || "n/a";
+      const vertical = vn.vertical_guess || "general";
+      const status = vn.cmn_status || "draft";
+      vaultRoutingEl.textContent =
+        `slug: ${slug} · vertical: ${vertical} · status: ${status}`;
 
-ANSWER CAPSULE (answer_capsule_25w)
+      // Decision frame
+      qTypeEl.textContent = df.question_type ? `question_type: ${df.question_type}` : "question_type: unknown";
 
-- 1 sentence, roughly 20–25 words (about 120–150 characters).
-- Must be LINK-FREE (no URLs, no "click here", no explicit brand plugs unless essential to the fact).
-- Directly summarize the same primary intent as cleaned_question in neutral, factual tone.
-- For yes/no-style questions (is, are, can, will, should), start with a stance:
-  - "Yes, …" when the answer is broadly yes.
-  - "No, …" when the answer is broadly no.
-  - "It depends, but generally …" when nuance matters.
-- Explicitly name the main entity instead of saying "it" or "this".
+      clearList(prosListEl);
+      if (Array.isArray(df.pros) && df.pros.length) {
+        df.pros.forEach((p) => {
+          const li = document.createElement("li");
+          li.textContent = `${p.label || ""}: ${p.reason || ""}`;
+          prosListEl.appendChild(li);
+        });
+      }
 
-MINI ANSWER (mini_answer)
+      clearList(consListEl);
+      if (Array.isArray(df.cons) && df.cons.length) {
+        df.cons.forEach((c) => {
+          const li = document.createElement("li");
+          li.textContent = `${c.label || ""}: ${c.reason || ""}`;
+          consListEl.appendChild(li);
+        });
+      }
 
-- 2–5 sentences, AI-Overview style.
-- The FIRST sentence must NOT simply restate the capsule in different words; add a new angle such as WHO this applies to or WHEN it matters most.
-- Use later sentences to explain:
-  - WHY the capsule is true (mechanism or tradeoff),
-  - WHAT 2–3 simple steps the user should take next,
-  - and any key LIMIT or caveat, especially for money/health/legal topics.
-- No rhetorical questions. No URLs.
+      clearList(checksListEl);
+      if (Array.isArray(df.personal_checks) && df.personal_checks.length) {
+        df.personal_checks.forEach((pc) => {
+          const li = document.createElement("li");
+          li.textContent = `${pc.label || ""} — ${pc.prompt || ""}`;
+          checksListEl.appendChild(li);
+        });
+      }
 
-OWNED INSIGHT (owned_insight)
+      // Action protocol
+      const steps = Array.isArray(ap.steps) ? ap.steps : [];
+      const type = ap.type || "none";
+      const effort = ap.estimated_effort || "";
+      const tools = Array.isArray(ap.recommended_tools) ? ap.recommended_tools : [];
 
-- Optional short sentence with an original, branded, or framework-style insight that goes beyond generic web answers.
-- If no meaningful owned insight exists, return an empty string "".
-- Do NOT repeat the capsule; add something deeper (e.g. a rule-of-thumb, diagnostic heuristic, or mindset).
+      let apText = `type: ${type}`;
+      if (steps.length) {
+        apText += "\nSteps:\n" + steps.map((s, i) => `${i + 1}. ${s}`).join("\n");
+      }
+      if (effort) {
+        apText += `\nEstimated effort: ${effort}`;
+      }
+      if (tools.length) {
+        apText += `\nTools: ${tools.join(", ")}`;
+      }
+      actionProtocolEl.textContent = apText;
 
-Other rules (cleaned_question, flags, decision_frame, intent_map, action_protocol, vault_node, share_blocks) follow the same logic as before:
-- single primary intent in cleaned_question,
-- flags only from the allowed list,
-- decision_frame / intent_map / action_protocol populated consistently and concisely.
+      // Owned insight
+      const oi = typeof data.owned_insight === "string" ? data.owned_insight.trim() : "";
+      ownedInsightEl.textContent = oi || "No owned insight returned.";
 
-IMPORTANT:
-- Return ONLY the JSON object described above.
-- Do NOT include any extra text, commentary, or Markdown outside the JSON.
-    `.trim();
+      // Copy payloads
+      copyCapsuleBtn.dataset.copy = capsule;
+      copyMiniBtn.dataset.copy = mini;
+      copyStatusEl.textContent = "";
 
-    // AbortController for hard timeout
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      REQUEST_TIMEOUT_MS
-    );
+      // Raw JSON
+      jsonPreEl.textContent = JSON.stringify(data, null, 2);
+    }
 
-    const openaiRes = await fetch(OPENAI_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + apiKey
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        response_format: { type: "json_object" },
-        temperature: 0.2,
-        top_p: 0.9,
-        max_tokens: 900,
-        messages: [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: JSON.stringify({
-              raw_input: truncated,
-              original_length: raw_input.length,
-              was_truncated: wasTruncated
-            })
-          }
-        ]
-      })
-    }).catch((err) => {
-      // fetch itself can throw before we reach ok-status check
-      throw err;
+    function copyText(text) {
+      if (!navigator.clipboard) {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        return;
+      }
+      navigator.clipboard.writeText(text);
+    }
+
+    async function handleRun() {
+      const raw = (inputEl && inputEl.value || "").trim();
+      if (!raw) return;
+
+      setLoading(true);
+      try {
+        const data = await runInputCheck(raw);
+        console.log("InputCheck payload:", data);
+        renderResult(raw, data);
+      } catch (err) {
+        console.error("InputCheck error:", err);
+        alert("Input Check API error: " + (err.message || String(err)));
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    if (runBtn && inputEl) {
+      runBtn.addEventListener("click", handleRun);
+      inputEl.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          handleRun();
+        }
+      });
+    }
+
+    copyCapsuleBtn.addEventListener("click", function () {
+      const text = copyCapsuleBtn.dataset.copy || "";
+      if (!text) return;
+      copyText(text);
+      copyStatusEl.textContent = "Copied capsule.";
+      setTimeout(function () {
+        copyStatusEl.textContent = "";
+      }, 1500);
     });
 
-    clearTimeout(timeout);
+    copyMiniBtn.addEventListener("click", function () {
+      const text = copyMiniBtn.dataset.copy || "";
+      if (!text) return;
+      copyText(text);
+      copyStatusEl.textContent = "Copied mini answer.";
+      setTimeout(function () {
+        copyStatusEl.textContent = "";
+      }, 1500);
+    });
 
-    if (!openaiRes.ok) {
-      const text = await openaiRes.text();
-      console.error(
-        `[${reqId}] OpenAI error ${openaiRes.status}:`,
-        text
-      );
-      const fallback = buildFallback(
-        truncated,
-        "OpenAI HTTP " + openaiRes.status
-      );
-      res.status(200).json(fallback);
-      return;
-    }
+    toggleJsonBtn.addEventListener("click", function () {
+      jsonBlockEl.classList.toggle("visible");
+    });
 
-    let completion;
-    try {
-      completion = await openaiRes.json();
-    } catch (err) {
-      console.error(`[${reqId}] Error parsing OpenAI JSON:`, err);
-      const fallback = buildFallback(
-        truncated,
-        "invalid JSON from OpenAI"
-      );
-      res.status(200).json(fallback);
-      return;
-    }
-
-    const content =
-      completion?.choices?.[0]?.message?.content || "{}";
-
-    let payload;
-    try {
-      payload = JSON.parse(content);
-    } catch (err) {
-      console.error(
-        `[${reqId}] JSON parse error from model content:`,
-        err,
-        content
-      );
-      payload = buildFallback(
-        truncated,
-        "invalid JSON from model"
-      );
-    }
-
-    const normalized = normalizePayload(payload, truncated);
-    res.status(200).json(normalized);
-  } catch (err) {
-    const reason =
-      err && err.name === "AbortError"
-        ? "OpenAI request timeout"
-        : "unexpected server error";
-
-    console.error(`[${reqId}] Unexpected InputCheck error:`, err);
-    const fallback = buildFallback(raw_input, reason);
-    res.status(200).json(fallback);
-  }
-}
+    // Spinner animation
+    const style = document.createElement("style");
+    style.innerHTML =
+      "@keyframes ic-spin {from{transform:rotate(0deg);}to{transform:rotate(360deg);}}";
+    document.head.appendChild(style);
+  })();
+</script>
