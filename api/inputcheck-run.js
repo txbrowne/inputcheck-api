@@ -145,7 +145,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const systemPrompt = `
+  const systemPrompt = `
 You are "InputCheck Raptor-3 Capsule Engine", a capsule-first AI Overview generator for theanswervault.com.
 
 Your ONLY job for each request:
@@ -153,36 +153,63 @@ Your ONLY job for each request:
 2) Convert it into ONE short Google-style search query ("canonical_query").
 3) Answer that query with ONE snippet-ready answer capsule (~20–25 words) and ONE short mini-answer (3–5 sentences).
 
-Rules for "canonical_query":
-- Always SHORTER than the raw_input. It must not simply copy the question.
-- 3–10 words, all lowercase.
+========================
+RULES FOR "canonical_query"
+========================
+
+- It MUST be SHORTER than the raw_input. It must NOT simply copy the question.
+- Target 3–10 words, all lowercase.
 - No commas, quotes, or extra punctuation; only letters, numbers, spaces, and an optional question mark at the end.
 - Remove filler like "be honest", "actually", "really", "just", "or is it more like", "everyone is screaming", "basically".
 - Strip time fluff unless essential (e.g. "next decade" becomes "long term").
 - Keep the main entities (brands, models, locations, key numbers) and the core task or comparison.
-- For “A vs B vs C” questions, compress like "pay 18 percent debt vs buy house vs invest".
-- If the raw_input has more than 15 words, the canonical_query should usually be 10 words or fewer.
-- If your first draft of canonical_query would be identical (or nearly identical) to raw_input, you MUST shorten it by removing adjectives, side comments, and extra clauses until it fits these rules.
+- For “A vs B vs C” questions, compress like: "pay 18 percent debt vs buy house vs invest".
+- If raw_input has more than 15 words, canonical_query should usually be 10 words or fewer.
+- If your first draft of canonical_query would be identical (or nearly identical) to raw_input, you MUST rewrite it by removing adjectives, side comments, and extra clauses until it is clearly shorter and more search-like.
+- Examples:
+  - raw_input: "Should I pay off my 18% credit card debt or invest extra cash instead?"
+    canonical_query: "pay off 18 percent credit card debt or invest"
+  - raw_input: "Will AI take my job as a truck driver?"
+    canonical_query: "will ai take truck driving jobs"
 
-Rules for "answer_capsule_25w":
+========================
+RULES FOR "answer_capsule_25w"
+========================
+
 - ONE sentence, roughly 20–25 words, that directly answers the canonical_query.
-- For yes/no-style questions (is, are, can, will, should) start with an explicit stance:
-  - "Yes, ..." when the answer is broadly yes,
-  - "No, ..." when the answer is broadly no,
-  - or "It depends, but generally ..." when nuance or conditions matter.
+- For yes/no-style questions (is, are, can, will, should):
+  - Start with an explicit stance: "Yes, ...", "No, ...", or "It depends, but generally ...".
+  - If the user asks "will AI take my job" or "will AI take all jobs", you MUST clearly state that AI does NOT completely take all such jobs, even if risk is high.
 - Include at least one key condition, trade-off, or caveat when relevant.
 - Use clear entities instead of vague pronouns.
 - Do NOT include URLs.
 
-Rules for "mini_answer":
+========================
+RULES FOR "mini_answer"
+========================
+
 - 3–5 short sentences.
-- The FIRST sentence must NOT repeat the capsule's main claim in similar wording. It must add new information such as mechanism, who it applies to, timeline, or key limitation.
-- Use the mini_answer to explain WHY the capsule is true, WHEN it might change, WHO is most affected, and WHAT simple steps the user should take next.
+- The FIRST sentence must NOT repeat the capsule's main claim in similar wording. It must add new information such as:
+  - WHO this mainly applies to,
+  - WHEN it matters,
+  - or WHAT key context changes the answer.
+- Use the rest of the mini_answer to explain:
+  - WHY the capsule is true (mechanism or driver),
+  - WHEN it might change,
+  - WHO is most affected,
+  - and WHAT simple steps the user should take next (2–3 steps in one sentence).
 - One main idea per sentence. No bullets, no markdown, no rhetorical questions.
 - Do NOT include URLs.
 
-Safety:
+========================
+SAFETY
+========================
+
 - For health, legal, financial, or other high-stakes topics, keep guidance general, avoid detailed how-to instructions, and advise consulting qualified professionals.
+
+========================
+OUTPUT CONTRACT
+========================
 
 You must return a SINGLE JSON object with EXACTLY this shape:
 
@@ -197,141 +224,3 @@ Do NOT add or remove keys.
 All fields must be plain strings (never null).
 Do NOT include any extra text, comments, or markdown.
 `.trim();
-
-    // AbortController for hard timeout
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      REQUEST_TIMEOUT_MS
-    );
-
-    const openaiRes = await fetch(OPENAI_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + apiKey
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        response_format: { type: "json_object" },
-        temperature: 0.1,
-        top_p: 0.8,
-        max_tokens: 400,
-        messages: [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: JSON.stringify({
-              raw_input: truncated,
-              original_length: raw_input.length,
-              was_truncated: wasTruncated
-            })
-          }
-        ]
-      })
-    }).catch((err) => {
-      throw err;
-    });
-
-    clearTimeout(timeout);
-
-    if (!openaiRes.ok) {
-      const text = await openaiRes.text();
-      console.error(
-        `[${reqId}] OpenAI error ${openaiRes.status}:`,
-        text
-      );
-      const fallback = buildFallback(
-        truncated,
-        "OpenAI HTTP " + openaiRes.status,
-        wasTruncated
-      );
-      fallback.meta.request_id = reqId;
-      res.status(200).json(fallback);
-      return;
-    }
-
-    let completion;
-    try {
-      completion = await openaiRes.json();
-    } catch (err) {
-      console.error(`[${reqId}] Error parsing OpenAI JSON:`, err);
-      const fallback = buildFallback(
-        truncated,
-        "invalid JSON from OpenAI",
-        wasTruncated
-      );
-      fallback.meta.request_id = reqId;
-      res.status(200).json(fallback);
-      return;
-    }
-
-    const content =
-      completion?.choices?.[0]?.message?.content || "{}";
-
-    let payload;
-    try {
-      payload = JSON.parse(content);
-    } catch (err) {
-      console.error(
-        `[${reqId}] JSON parse error from model content:`,
-        err,
-        content
-      );
-      const fallback = buildFallback(
-        truncated,
-        "invalid JSON from model",
-        wasTruncated
-      );
-      fallback.meta.request_id = reqId;
-      res.status(200).json(fallback);
-      return;
-    }
-
-    // Coerce and backfill fields
-    const canonicalRaw = (payload.canonical_query || "").toString().trim();
-    const capsuleRaw = (payload.answer_capsule_25w || "").toString().trim();
-    const miniRaw = (payload.mini_answer || "").toString().trim();
-
-    const canonical_query =
-      canonicalRaw || buildCanonicalFromText(truncated);
-    const answer_capsule_25w =
-      capsuleRaw ||
-      "No capsule answer was generated. Try asking the question more directly or run the engine again.";
-    const mini_answer =
-      miniRaw ||
-      "The engine did not return a full mini answer for this question. Consider re-running the request or simplifying the input for clearer processing.";
-
-    const processing_time_ms = Date.now() - startTime;
-
-    const responseBody = {
-      raw_input,
-      canonical_query,
-      answer_capsule_25w,
-      mini_answer,
-      meta: {
-        request_id: reqId,
-        engine_version: ENGINE_VERSION,
-        model: OPENAI_MODEL,
-        processing_time_ms,
-        input_length_chars: raw_input.length,
-        was_truncated: wasTruncated,
-        backend_error: false,
-        reason: ""
-      }
-    };
-
-    res.status(200).json(responseBody);
-  } catch (err) {
-    const reason =
-      err && err.name === "AbortError"
-        ? "OpenAI request timeout"
-        : "unexpected server error";
-
-    console.error(`[${reqId}] Unexpected Capsule Engine error:`, err);
-    const fallback = buildFallback(raw_input, reason, false);
-    fallback.meta.request_id = reqId;
-    res.status(200).json(fallback);
-  }
-}
