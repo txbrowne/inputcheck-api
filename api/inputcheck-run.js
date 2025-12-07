@@ -438,7 +438,7 @@ CANONICAL_QUERY RULES
 
 - "canonical_query" is a short, Google-style search phrase derived from the cleaned_question.
 - It should look like what a user would actually type into the Google search bar.
-- 3–12 words, lower friction, minimal punctuation.
+- 3–12 words, lower friction, minimal punctuation. Prefer shorter when possible (around 5–9 words).
 - Avoid pronouns like "I", "my", "me" unless truly necessary.
 - Good examples:
   - "jeep jl front passenger floor leak fix"
@@ -453,6 +453,10 @@ ANSWER CAPSULE (answer_capsule_25w)
 - 1 sentence, roughly 20–25 words (about 120–150 characters).
 - Must be LINK-FREE (no URLs, no "click here", no explicit brand plugs unless essential to the fact).
 - Directly summarize the same primary intent as cleaned_question in neutral, factual tone.
+- For clear yes/no or A-vs-B decisions (questions starting with "is", "are", "can", "will", "should", or "pay off X or invest Y"), start with an explicit stance:
+  - "Yes, ..." when the answer is broadly yes.
+  - "No, ..." when the answer is broadly no.
+  - "It depends, but generally ..." when nuance is required.
 - Written so it can be quoted alone as an AI Overview / featured snippet sentence.
 
 OWNED INSIGHT (owned_insight)
@@ -461,111 +465,23 @@ OWNED INSIGHT (owned_insight)
 - If no meaningful owned insight exists, return an empty string "".
 - Do NOT repeat the capsule; add something deeper (e.g. a data point, a rule-of-thumb, or a diagnostic heuristic).
 
-Other rules (cleaned_question, flags, mini_answer, decision_frame, intent_map, action_protocol, vault_node, share_blocks) follow the same logic as before:
+MINI ANSWER (mini_answer)
+
+- 2–5 sentences in AI-Overview style.
+- Expand on the capsule instead of repeating it in different words.
+- Explain WHY the answer is true, WHAT main tradeoffs matter, and WHAT simple next steps the user should consider.
+- For personal finance questions, briefly mention:
+  - emergency savings (or safety buffer) when relevant,
+  - the tradeoff between guaranteed interest saved vs uncertain investment returns,
+  - and overall risk level.
+- For health, legal, or other high-stakes questions, keep guidance general and recommend consulting a qualified professional.
+
+Other rules (cleaned_question, flags, decision_frame, intent_map, action_protocol, vault_node, share_blocks) follow the same logic as before:
 - single primary intent in cleaned_question,
 - flags only from the allowed list,
-- mini_answer 2–5 sentences in AI-Overview style,
 - decision_frame / intent_map / action_protocol populated consistently and concisely.
 
 IMPORTANT:
 - Return ONLY the JSON object described above.
 - Do NOT include any extra text, commentary, or Markdown outside the JSON.
     `.trim();
-
-    // AbortController for hard timeout
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      REQUEST_TIMEOUT_MS
-    );
-
-    const openaiRes = await fetch(OPENAI_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + apiKey
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        response_format: { type: "json_object" },
-        temperature: 0.2,
-        top_p: 0.9,
-        max_tokens: 900,
-        messages: [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: JSON.stringify({
-              raw_input: truncated,
-              original_length: raw_input.length,
-              was_truncated: wasTruncated
-            })
-          }
-        ]
-      })
-    }).catch((err) => {
-      // fetch itself can throw before we reach ok-status check
-      throw err;
-    });
-
-    clearTimeout(timeout);
-
-    if (!openaiRes.ok) {
-      const text = await openaiRes.text();
-      console.error(
-        `[${reqId}] OpenAI error ${openaiRes.status}:`,
-        text
-      );
-      const fallback = buildFallback(
-        truncated,
-        "OpenAI HTTP " + openaiRes.status
-      );
-      res.status(200).json(fallback);
-      return;
-    }
-
-    let completion;
-    try {
-      completion = await openaiRes.json();
-    } catch (err) {
-      console.error(`[${reqId}] Error parsing OpenAI JSON:`, err);
-      const fallback = buildFallback(
-        truncated,
-        "invalid JSON from OpenAI"
-      );
-      res.status(200).json(fallback);
-      return;
-    }
-
-    const content =
-      completion?.choices?.[0]?.message?.content || "{}";
-
-    let payload;
-    try {
-      payload = JSON.parse(content);
-    } catch (err) {
-      console.error(
-        `[${reqId}] JSON parse error from model content:`,
-        err,
-        content
-      );
-      payload = buildFallback(
-        truncated,
-        "invalid JSON from model"
-      );
-    }
-
-    const normalized = normalizePayload(payload, truncated);
-    res.status(200).json(normalized);
-  } catch (err) {
-    const reason =
-      err && err.name === "AbortError"
-        ? "OpenAI request timeout"
-        : "unexpected server error";
-
-    console.error(`[${reqId}] Unexpected InputCheck error:`, err);
-    const fallback = buildFallback(raw_input, reason);
-    res.status(200).json(fallback);
-  }
-}
