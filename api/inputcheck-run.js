@@ -1,5 +1,7 @@
+
+
 // api/inputcheck-run.js
-// Input Check v1.5 – live engine calling OpenAI and returning the fixed JSON contract.
+// Input Check v1.4 – live engine calling OpenAI and returning the fixed JSON contract.
 
 "use strict";
 
@@ -20,7 +22,7 @@ const REQUEST_TIMEOUT_MS = parseInt(
   process.env.INPUTCHECK_TIMEOUT_MS || "20000",
   10
 );
-const ENGINE_VERSION = "inputcheck-v1.5.0";
+const ENGINE_VERSION = "inputcheck-v1.4.0";
 
 // ----------------------------
 // Helpers
@@ -85,7 +87,7 @@ function buildFallback(rawInput, reason) {
       estimated_effort: "",
       recommended_tools: []
     },
-    // v1.4+ fields
+    // New v1.4 fields
     answer_capsule_25w: "",
     owned_insight: ""
   };
@@ -354,68 +356,21 @@ export default async function handler(req, res) {
 
   try {
     const systemPrompt = `
-You are "Input Check v1.5", the question-cleaning and mini-answer engine for theanswervault.com.
+You are "Input Check v1.4", the question-cleaning and mini-answer engine for theanswervault.com.
 
 Your job is to take a messy, real-world user question and:
 
-1) Produce ONE clear, answerable "cleaned_question"
-   - Focus on a single primary problem or intent.
-   - Remove side rants, extra commentary, and stacked asks.
-   - Keep natural language, but make it direct and answerable.
-
-2) Produce ONE concise "canonical_query"
-   - Short Google-style search phrase derived from cleaned_question.
-   - 3–10 words, all lowercase, minimal punctuation.
-   - Avoid "I / my / me" unless essential.
-   - Preserve key entities (brands, models, locations, core numbers).
-   - If the raw_input is already a short, clean search-style query (3–10 words, no extra clauses), canonical_query may match it exactly.
-   - Good examples:
-     - "jeep jl front passenger floor leak fix"
-     - "is smp better than hair transplant"
-     - "how many hours of sleep adult women need".
-
-3) Generate an "answer_capsule_25w"
-   - 1 sentence, roughly 20–25 words, link-free.
-   - Directly answers the cleaned_question.
-   - For yes/no or decision questions, start with a stance:
-     - "Yes, ...", "No, ...", or "It depends, but generally ...".
-   - When the user asks if something will "take all the jobs" or "replace X", use a stance + contrast pattern:
-     - e.g., "No, AI will not take all the jobs, but it will automate repetitive tasks and change which skills are most valuable."
-   - Explicitly name the main entity instead of saying "it" or "this problem".
-   - Written so it can be quoted alone as an AI Overview / featured snippet sentence.
-
-4) Generate a "mini_answer" (2–5 sentences)
-   - Expand the capsule without repeating it in different words.
-   - Do NOT copy more than 7 consecutive words from the capsule.
-   - Sentence 1: WHO / WHEN – who this mainly applies to or when it matters.
-   - Sentence 2: WHY – mechanism or reason (what causes the problem or makes the advice true).
-   - Sentence 3: WHAT TO DO – 2–3 simple steps in one sentence ("check X, then Y, then Z").
-   - Sentence 4–5 (optional): LIMITS / NEXT – important caveats and what to pay attention to next.
-   - No rhetorical questions. No URLs.
-
-5) Suggest ONE "next_best_question"
-   - A single, natural-language question that logically follows the cleaned_question.
-   - Must go one level deeper, more specific, or more practical.
-   - Reuse the same core entities where possible (same model, topic, or decision).
-   - It should be answerable as its own cleaned_question + mini_answer in the future.
-   - Stay in the same topic cluster (do NOT jump to a new topic).
-
-6) Detect any "input viruses" in the question
-   - Use only these flags: ["vague_scope", "stacked_asks", "missing_context", "safety_risk", "off_topic"].
-   - Mark each issue that appears in the raw_input.
-   - If none apply, return an empty array [].
-
-7) Provide a simple guess at the vertical/topic and intent for vault routing.
-
-8) Build three extra structured layers:
+1) Produce ONE clear, answerable "cleaned_question" that focuses on a single primary problem/intent.
+2) Produce ONE concise "canonical_query" string that represents how this question would most likely be typed into a Google search box.
+3) Generate an AI-Overview-style "mini_answer" (2–5 sentences) that directly answers the cleaned_question.
+4) Suggest ONE "next_best_question" that naturally follows and could be answered as its own Q&A node.
+5) Detect any "input viruses" in the question (vague scope, stacked asks, missing context, safety risk, off-topic) and encode them as flags.
+6) Provide a simple guess at the vertical/topic and intent for vault routing.
+7) Build three extra structured layers:
    - "decision_frame" (pros, cons, personal readiness checks),
    - "intent_map" (primary + sub-intents),
    - "action_protocol" (a short, ordered next-steps routine).
-
-9) Create a 25-word "answer_capsule_25w" and an optional "owned_insight" line for deeper, branded context.
-   - "owned_insight" is a short sentence with an original, framework-style insight.
-   - If no meaningful owned insight exists, return "".
-   - Do NOT repeat the capsule; add something deeper (e.g., a rule-of-thumb or diagnostic heuristic).
+8) Create a 25-word "answer_capsule_25w" and an optional "owned_insight" line for deeper, branded context.
 
 You must return a SINGLE JSON object with EXACTLY this shape:
 
@@ -481,9 +436,40 @@ You must return a SINGLE JSON object with EXACTLY this shape:
   "owned_insight": "string"
 }
 
+CANONICAL_QUERY RULES
+
+- "canonical_query" is a short, Google-style search phrase derived from the cleaned_question.
+- It should look like what a user would actually type into the Google search bar.
+- 3–12 words, lower friction, minimal punctuation.
+- Avoid pronouns like "I", "my", "me" unless truly necessary.
+- Good examples:
+  - "jeep jl front passenger floor leak fix"
+  - "is smp better than hair transplant"
+  - "how many hours of sleep do adult women need"
+- Bad examples:
+  - Full sentences with extra commentary.
+  - Including "according to inputcheck" or references to the engine.
+
+ANSWER CAPSULE (answer_capsule_25w)
+
+- 1 sentence, roughly 20–25 words (about 120–150 characters).
+- Must be LINK-FREE (no URLs, no "click here", no explicit brand plugs unless essential to the fact).
+- Directly summarize the same primary intent as cleaned_question in neutral, factual tone.
+- Written so it can be quoted alone as an AI Overview / featured snippet sentence.
+
+OWNED INSIGHT (owned_insight)
+
+- Optional short sentence with an original, branded, or framework-style insight that goes beyond generic web answers.
+- If no meaningful owned insight exists, return an empty string "".
+- Do NOT repeat the capsule; add something deeper (e.g. a data point, a rule-of-thumb, or a diagnostic heuristic).
+
+Other rules (cleaned_question, flags, mini_answer, decision_frame, intent_map, action_protocol, vault_node, share_blocks) follow the same logic as before:
+- single primary intent in cleaned_question,
+- flags only from the allowed list,
+- mini_answer 2–5 sentences in AI-Overview style,
+- decision_frame / intent_map / action_protocol populated consistently and concisely.
+
 IMPORTANT:
-- Fill EVERY field with a valid value of the correct type (no nulls except vault_node.public_url).
-- Do NOT change key names, add keys, or remove keys.
 - Return ONLY the JSON object described above.
 - Do NOT include any extra text, commentary, or Markdown outside the JSON.
     `.trim();
