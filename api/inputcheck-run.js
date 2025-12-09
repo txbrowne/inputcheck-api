@@ -1,5 +1,5 @@
 // api/inputcheck-run.js
-// InputCheck Raptor-3.5 – raw_input -> cleaned_question -> google_style_query -> full AI Overview (capsule + mini-answer + AO-style block).
+// InputCheck Raptor-3.5 LITE – raw_input -> cleaned_question -> google_style_query -> capsule + mini + SGE summary.
 
 "use strict";
 
@@ -15,12 +15,8 @@ const INPUT_MAX_CHARS = parseInt(
   process.env.INPUTCHECK_MAX_CHARS || "2000",
   10
 );
-const REQUEST_TIMEOUT_MS = parseInt(
-  process.env.INPUTCHECK_TIMEOUT_MS || "20000",
-  10
-);
 
-const ENGINE_VERSION = "inputcheck-raptor-3.5.0";
+const ENGINE_VERSION = "inputcheck-raptor-3.5-lite-1.0";
 
 // ----------------------------
 // Helpers
@@ -40,7 +36,7 @@ function makeRequestId() {
   );
 }
 
-// Very small stopword list just to shorten Google-style queries
+// Small stopword list for Google-style query compression
 const STOPWORDS = new Set([
   "the",
   "a",
@@ -113,15 +109,11 @@ function buildGoogleStyleQuery(source) {
   const stripped = safe.replace(/[^a-z0-9\s]/g, " ");
   const rawWords = stripped.split(/\s+/).filter(Boolean);
 
-  // First pass: drop stopwords
   let kept = rawWords.filter((w) => !STOPWORDS.has(w));
-
-  // If we removed too much, fall back to the first few raw words
   if (kept.length < 3) {
     kept = rawWords.slice(0, 8);
   }
 
-  // Hard cap to keep it short
   kept = kept.slice(0, 10);
 
   let query = kept.join(" ").trim();
@@ -164,7 +156,7 @@ function normalizeGoogleQuery(cleanedQuestion, googleRaw) {
   return candNorm;
 }
 
-// Simple slug generator from the Google-style query
+// Simple slug generator
 function buildSlug(text) {
   const safe = (text || "").toString().toLowerCase().trim();
   if (!safe) return "inputcheck-node";
@@ -181,92 +173,49 @@ function buildMetaTitle(cleanedQuestion, googleQuery) {
   const base =
     (cleanedQuestion || "").toString().trim() ||
     (googleQuery || "").toString().trim();
-  if (!base) return "InputCheck answer overview";
-  // Light truncation; HTML layer can refine further.
+  if (!base) return "InputCheck mini answer";
   return base.length > 70 ? base.slice(0, 67) + "..." : base;
 }
 
-// Build a basic meta_summary from capsule + mini
-function buildMetaSummary(answerCapsule, miniAnswer) {
+// Build a compact SGE/meta summary from capsule + mini
+function buildSgeSummary(answerCapsule, miniAnswer) {
   const capsule = (answerCapsule || "").toString().trim();
   const mini = (miniAnswer || "").toString().trim();
   const combined = (capsule + " " + mini).trim();
   if (!combined) {
-    return "This answer overview summarizes likely causes, key factors, and practical next steps for this question.";
+    return "Explains the main decision, key conditions, and next considerations in one compact Mini Answer.";
   }
-  // Rough cap ~220 chars; HTML layer can further adjust.
-  return combined.length > 220
-    ? combined.slice(0, 217) + "..."
+  return combined.length > 200
+    ? combined.slice(0, 197) + "..."
     : combined;
-}
-
-// Normalize an array of strings
-function normalizeStringArray(arr, maxItems = 8) {
-  if (!Array.isArray(arr)) return [];
-  return arr
-    .map((v) => (v == null ? "" : v.toString().trim()))
-    .filter(Boolean)
-    .slice(0, maxItems);
-}
-
-// Normalize follow-up Q&A array
-function normalizeFollowUpQA(arr, maxItems = 4) {
-  if (!Array.isArray(arr)) return [];
-  const out = [];
-  for (const item of arr) {
-    if (!item || typeof item !== "object") continue;
-    const question = (item.question || "").toString().trim();
-    const answer_capsule_15w = (item.answer_capsule_15w || "")
-      .toString()
-      .trim();
-    if (!question && !answer_capsule_15w) continue;
-    out.push({ question, answer_capsule_15w });
-    if (out.length >= maxItems) break;
-  }
-  return out;
 }
 
 // Fallback payload if OpenAI fails
 function buildFallback(rawInput, reason, wasTruncated) {
   const safeInput = (rawInput || "").toString().trim();
   const cleaned_question = safeInput || "InputCheck engine fallback answer";
-  const google_style_query = buildGoogleStyleQuery(safeInput);
+  const google_style_query = buildGoogleStyleQuery(cleaned_question);
   const url_slug = buildSlug(google_style_query || cleaned_question);
 
-  const capsule =
-    "No detailed answer is available right now because the engine could not complete your request safely. Try again later or simplify the question.";
-  const mini =
-    "This is a temporary fallback response generated when the capsule engine hit a technical or safety limit. Do not rely on this for critical health, legal, or financial decisions. Try asking again with a clearer, more focused question or consult a qualified professional for personalized guidance.";
-
-  const meta_title = buildMetaTitle(cleaned_question, google_style_query);
-  const meta_summary = buildMetaSummary(capsule, mini);
-  const next_best_question =
-    "What is the very next detail you would want answered about this question?";
+  const answer_capsule_25w =
+    "It depends—this fallback answer appears when the engine cannot safely complete your request and should not be used for important decisions.";
+  const mini_answer =
+    "The engine hit a technical or safety limit, so it returned a generic fallback instead of a tailored Mini Answer. Try narrowing the question or removing sensitive details, and do not rely on this response for health, legal, or major financial choices.";
+  const sge_summary =
+    "Fallback Mini Answer used when the engine cannot safely generate a full response; narrow the question and try again before acting.";
+  const critical_caveat =
+    "Do not rely on this fallback for critical health, legal, or financial decisions; consult a qualified professional.";
 
   return {
     raw_input: safeInput,
     cleaned_question,
     google_style_query,
-    answer_capsule_25w: capsule,
-    mini_answer: mini,
-    next_best_question,
+    answer_capsule_25w,
+    mini_answer,
     url_slug,
-    meta_title,
-    meta_summary,
-    full_ai_overview: {
-      primary_answer: {
-        answer_capsule_25w: capsule,
-        mini_answer: mini
-      },
-      key_points: [
-        "This is a fallback answer used when the main engine cannot complete a safe or valid response."
-      ],
-      step_by_step: [],
-      critical_caveat:
-        "Do not rely on this fallback for critical health, legal, or financial decisions; consult a qualified professional.",
-      follow_up_qa: [],
-      next_best_question
-    },
+    meta_title: buildMetaTitle(cleaned_question, google_style_query),
+    sge_summary,
+    critical_caveat,
     meta: {
       request_id: null,
       engine_version: ENGINE_VERSION,
@@ -311,9 +260,18 @@ export default async function handler(req, res) {
     return;
   }
 
-  const body = req.body || {};
-  let raw_input = "";
+  // Body parsing (supports Next.js / Vercel where req.body may already be an object)
+  let body = req.body;
+  if (typeof body === "string") {
+    try {
+      body = JSON.parse(body);
+    } catch (_err) {
+      // leave as string; we'll fail below
+    }
+  }
+  body = body || {};
 
+  let raw_input = "";
   try {
     raw_input = (body.raw_input || "").toString();
   } catch (err) {
@@ -343,13 +301,13 @@ You are "InputCheck Raptor-3.5 LITE AO Engine" for theanswervault.com.
 Your job:
 - Take one decision-style question that may also include an offer URL in the same line.
 - Clean it into a clear, answerable question and a short Google-style query.
-- Generate a tight AI Overview capsule + mini answer that is more honest, clearer, and more outcome-focused than typical AI overviews.
+- Generate a tight AI Overview capsule + mini answer that is honest, outcome-focused, and neutral.
 - Output ONE JSON object that my code can render directly into a Mini Answer page.
 
 ------------------------------------------------
-0. Input you will receive (from my backend)
+0. Input you will receive
 ------------------------------------------------
-You will be given a user message that looks like this JSON:
+You will receive a user message with JSON like:
 
 {
   "raw_input": "user's question and possibly an https:// offer URL",
@@ -357,28 +315,28 @@ You will be given a user message that looks like this JSON:
   "was_truncated": true_or_false
 }
 
-"raw_input" may look like:
-
-- "Is my store big enough for Liquid Web’s managed hosting? ### https://example-offer-url.com"
-- OR: "Is Beehiiv actually good for monetizing newsletters through ads and sponsorships? https://example-offer-url.com"
+"raw_input" examples:
+- "Is my store big enough for Liquid Web’s managed hosting? ### https://offer-url.com"
+- "Is Beehiiv actually good for monetizing newsletters through ads and sponsorships? https://offer-url.com"
 
 Rules:
-- Treat **everything BEFORE the first "http"** as the question.
-- Treat the first "http..." segment as an OFFER URL that is **NOT** to be printed.
-- You may use the presence of the URL as a signal that this is a tools/platform/offer decision, but you must **never** include URLs, brand-specific CTAs, or affiliate language in your outputs.
+- Treat everything BEFORE the first "http" as the question.
+- Ignore the URL completely; do NOT echo it or mention it.
+- You may treat the presence of a URL as a hint that this is a tool/platform decision, but never output URLs or affiliate-style language.
 
 ------------------------------------------------
-1. What you must output (top-level JSON shape)
+1. REQUIRED top-level JSON shape
 ------------------------------------------------
-You MUST return a SINGLE JSON object with EXACTLY these top-level keys:
+Return a SINGLE JSON object with EXACTLY these top-level keys:
 
 {
   "cleaned_question": "string",
   "google_style_query": "string",
   "answer_capsule_25w": "string",
   "mini_answer": "string",
-  "sge_summary": "string",
   "url_slug": "string",
+  "meta_title": "string",
+  "sge_summary": "string",
   "critical_caveat": "string",
   "meta": {
     "engine_version": "string",
@@ -386,199 +344,156 @@ You MUST return a SINGLE JSON object with EXACTLY these top-level keys:
   }
 }
 
-Do NOT add or remove top-level keys.
-Do NOT wrap this object in an array.
-Do NOT return markdown, prose, or any extra text outside the JSON.
+- Do NOT add or remove top-level keys.
+- Do NOT wrap the object in an array.
+- Do NOT include markdown, commentary, or backticks.
+- Do NOT include any URLs in any field.
 
 ------------------------------------------------
-2. Field-by-field requirements
+2. Field definitions
 ------------------------------------------------
 
-1) "cleaned_question"
+1) cleaned_question
 - One clear, answerable question in natural language.
-- Strip away filler, chatter, and platform references (TikTok, YouTube, Reddit, etc.).
-- KEEP any context that changes the answer (business size, stage, traffic level, constraints, etc.).
-- Remove the URL entirely.
-- Example:
-  raw_input: "Is my WooCommerce store big enough for Liquid Web’s managed hosting? ### https://offer-url.com"
-  cleaned_question: "Is my WooCommerce store big enough to benefit from upgrading to Liquid Web’s managed hosting?"
+- Remove filler, chatter, and platform references (TikTok, YouTube, etc.).
+- KEEP context that changes the answer (store size, budget, goals, traffic, risk tolerance, etc.).
+- Remove any URL text.
 
-2) "google_style_query"
-- A SHORT, Google-style search phrase built from the cleaned question.
-- 3–10 words, all lowercase.
-- Only letters, numbers, spaces, and an optional "?" at the end.
-- Strip pronouns, filler, and platform names (i, my, tiktok, youtube, etc.).
-- Focus on entity + condition + decision.
-- Examples:
-  cleaned_question: "Is my WooCommerce store big enough to benefit from Liquid Web’s managed hosting?"
-  google_style_query: "liquid web managed hosting store size"
-  cleaned_question: "Is Beehiiv the best choice to monetize my newsletter through ads and sponsorships?"
-  google_style_query: "beehiiv newsletter monetization ads sponsorships"
+2) google_style_query
+- Short Google-style search phrase based on cleaned_question.
+- 3–10 words, lowercase, letters/numbers/spaces, optional "?" at the end.
+- Strip pronouns and platform names (i, my, tiktok, etc.).
+- Focus on entity + condition + decision (e.g. "liquid web managed hosting store size").
 
-3) "answer_capsule_25w"
-- ONE sentence, about 20–25 words, written in clear natural language.
-- It must directly answer the cleaned question in a way that a searcher could copy/paste as a snippet.
+3) answer_capsule_25w
+- ONE sentence, about 20–25 words.
+- Directly answers the cleaned question.
 
-DECISIONLOCK (non-negotiable):
-- If the cleaned_question is a **decision question** (worth/best/better/should/switch/upgrade/stay/is it time/when does it make sense/try this vs that), then:
-  - The capsule MUST begin with EXACTLY one of:
-    - "Yes—"
-    - "No—"
-    - "It depends—"
-- After that prefix, immediately state the main condition or split.
-- Examples:
-  - "It depends—upgrading to Liquid Web’s managed hosting makes sense once your store’s traffic and downtime risk justify a higher monthly bill."
-  - "Yes—Beehiiv is a strong choice if you plan to monetize heavily through built-in ads and sponsorships and are comfortable with a focused newsletter-first platform."
+DecisionLock rule:
+- If the cleaned_question is a decision question (worth / best / better / should / switch / upgrade / stay / is it time / choose), the capsule MUST start with exactly one of:
+  - "Yes—"
+  - "No—"
+  - "It depends—"
+- Immediately state the main condition or split after that prefix.
 
-Additional capsule rules:
-- Include at least one key condition, trade-off, or threshold.
-- No URLs, no CTAs, no brand puffery, no "click here".
-- Tone: direct, calm, non-corporate, and honest.
+Additional:
+- Include at least one condition, trade-off, or threshold.
+- No URLs, no CTAs, no salesy language.
 
-4) "mini_answer"
-- 3–5 short sentences that expand the capsule.
-- The FIRST sentence must NOT simply restate the capsule; add new detail.
+4) mini_answer
+- 3–5 short sentences.
+- First sentence must add new detail, not simply restate the capsule.
 - Explain:
-  - WHY the answer leans the way it does,
-  - WHEN the decision flips (thresholds, traffic/revenue conditions),
-  - WHO this applies to most,
-  - and WHAT the user should roughly consider doing next (at a high level).
-- Use outcome-first framing:
-  - Talk about time saved, revenue impact, risk reduction, stability, simplicity, peace of mind.
-- Stay neutral and advisory:
-  - Prefer language like "often", "can", "usually", "for many stores/agencies in this situation".
-- No URLs, no brand slogans, no affiliate-style language.
+  - why the answer leans that way,
+  - when the decision flips (traffic, revenue, workload thresholds),
+  - who this applies to,
+  - what to consider doing next (e.g. compare plans, run a small test).
+- Use outcome-first language: time saved, revenue impact, risk reduction, stability, simplicity.
+- Neutral, advisory tone; no hype or guarantees.
 
-5) "sge_summary"
-- A concise, neutral summary that can be used BOTH as meta description **and** `<meta name="sge:summary">`.
-- 110–200 characters is ideal (but you do not need to count explicitly).
-- One compact paragraph that:
-  - states the decision in plain language,
-  - highlights 1–2 key factors or thresholds,
-  - and hints at the next step (evaluate traffic/revenue, test, compare).
-- No brand hype, no URLs, no CTAs.
-- Example skeleton:
-  - "Explains when upgrading to managed hosting makes sense based on your store’s size, traffic, and downtime risk, and when cheaper options are still enough."
+5) url_slug
+- Short, hyphenated slug derived from the google_style_query.
+- Lowercase; words separated by hyphens; no punctuation.
+- If the query is empty, derive from the cleaned_question.
 
-6) "url_slug"
-- A short, hyphenated slug built from the google_style_query.
-- lowercased; words separated by hyphens; no spaces or punctuation.
-- If the query is empty, fall back to cleaned_question.
-- Example:
-  google_style_query: "liquid web managed hosting store size"
-  url_slug: "liquid-web-managed-hosting-store-size"
+6) meta_title
+- Short, clear title that could be used for a page/tab title.
+- 45–70 characters is ideal (you do not need to count).
+- Summarize the core question/decision in natural language.
+- No clickbait or CTAs.
 
-7) "critical_caveat"
-- ONE sentence with the most important warning, nuance, or "watch out" constraint for this decision.
-- Make it specific and quotable, not generic.
-- Examples:
-  - "Upgrading too early can lock you into higher monthly costs without a clear revenue or stability benefit."
-  - "Hosting alone won’t fix inefficient code or bloated plugins—those still need attention."
+7) sge_summary
+- Concise, neutral summary suitable for both meta description and <meta name="sge:summary">.
+- Aim for roughly 110–200 characters (no need to count exactly).
+- Combine:
+  - the main decision,
+  - 1–2 key conditions or thresholds,
+  - and a hint at the next consideration (e.g. review traffic, compare options, test performance).
+- No URLs, no overt sales language.
 
-8) "meta"
-- A small object describing the engine and model.
-- Example:
-  "meta": {
+8) critical_caveat
+- ONE sentence highlighting the most important warning, nuance, or "watch out" constraint.
+- Make it specific and quotable, not generic ("consult a professional").
+
+9) meta
+- Object describing engine and model, for debugging/logging:
+  {
     "engine_version": "inputcheck-raptor-3.5-lite-1.0",
     "model": "gpt-4.1-mini"
   }
 
-If you are unsure of the exact engine_version, you may leave a reasonable placeholder; my backend can overwrite these fields if needed.
+------------------------------------------------
+3. Tone & safety
+------------------------------------------------
+- Tone: honest, calm, no-bullshit coach.
+- Short, clear sentences; avoid corporate jargon.
+- For medical, legal, mental health, and major personal finance questions:
+  - Stay general and educational.
+  - Do NOT recommend specific treatments, medications, or financial products.
+  - Encourage consulting qualified professionals.
 
 ------------------------------------------------
-3. Tone and style
+4. Output constraints (critical)
 ------------------------------------------------
-- Write like a smart, no-bullshit coach who respects the reader’s time.
-- Natural language, not stiff corporate jargon.
-- Short, direct sentences; avoid long, tangled paragraphs.
-- Honest about tradeoffs. Do NOT oversell any tool or platform.
-- You may gently suggest testing a tool when it is reasonable, but never guarantee results.
-
-------------------------------------------------
-4. Safety rules (YMYL)
-------------------------------------------------
-For medical, legal, mental health, and major personal finance questions:
-- Stay general and educational.
-- Do NOT tell the user exactly what treatment, medication, or financial product to choose.
-- Encourage consulting qualified professionals or trusted local advisors for personal decisions.
-- No specific product nudges in those domains.
-
-------------------------------------------------
-5. Output format constraints (VERY IMPORTANT)
-------------------------------------------------
-- You must return ONLY the JSON object described in section 1.
-- No markdown, no triple backticks, no explanation text.
-- No comments or trailing commas.
-- Do not echo the URL or include any URL in any field.
-- Before you respond, quickly check:
-  - Does "answer_capsule_25w" start with "Yes—", "No—", or "It depends—" when the question is a decision question?
+- Output ONLY the JSON object described in section 1.
+- No markdown, no prose, no extra text.
+- Do NOT include any URLs, even if present in the input.
+- Before responding, self-check:
   - Are all required keys present?
-  - Are there any URLs or CTAs? If yes, remove them.
-
-Once the self-check passes, output the final JSON object.
+  - For decision questions, does answer_capsule_25w start with "Yes—", "No—", or "It depends—"?
+  - Did you avoid URLs and salesy CTAs?
 `.trim();
-
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      REQUEST_TIMEOUT_MS
-    );
-
-    const openaiRes = await fetch(OPENAI_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + apiKey
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        response_format: { type: "json_object" },
-        temperature: 0.15,
-        top_p: 0.8,
-        max_tokens: 900,
-        messages: [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: JSON.stringify({
-              raw_input: truncated,
-              original_length: raw_input.length,
-              was_truncated: wasTruncated
-            })
-          }
-        ]
-      })
-    }).catch((err) => {
-      throw err;
-    });
-
-    clearTimeout(timeout);
-
-    if (!openaiRes.ok) {
-      const text = await openaiRes.text();
-      console.error(
-        `[${reqId}] OpenAI error ${openaiRes.status}:`,
-        text
-      );
-      const fallback = buildFallback(
-        truncated,
-        "OpenAI HTTP " + openaiRes.status,
-        wasTruncated
-      );
-      fallback.meta.request_id = reqId;
-      res.status(200).json(fallback);
-      return;
-    }
 
     let completion;
     try {
+      const openaiRes = await fetch(OPENAI_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + apiKey
+        },
+        body: JSON.stringify({
+          model: OPENAI_MODEL,
+          response_format: { type: "json_object" },
+          temperature: 0.15,
+          top_p: 0.8,
+          max_tokens: 700,
+          messages: [
+            { role: "system", content: systemPrompt },
+            {
+              role: "user",
+              content: JSON.stringify({
+                raw_input: truncated,
+                original_length: raw_input.length,
+                was_truncated: wasTruncated
+              })
+            }
+          ]
+        })
+      });
+
+      if (!openaiRes.ok) {
+        const text = await openaiRes.text();
+        console.error(
+          `[${reqId}] OpenAI error ${openaiRes.status}:`,
+          text
+        );
+        const fallback = buildFallback(
+          truncated,
+          "OpenAI HTTP " + openaiRes.status,
+          wasTruncated
+        );
+        fallback.meta.request_id = reqId;
+        res.status(200).json(fallback);
+        return;
+      }
+
       completion = await openaiRes.json();
     } catch (err) {
-      console.error(`[${reqId}] Error parsing OpenAI JSON:`, err);
+      console.error(`[${reqId}] OpenAI fetch error:`, err);
       const fallback = buildFallback(
         truncated,
-        "invalid JSON from OpenAI",
+        "OpenAI network or fetch error",
         wasTruncated
       );
       fallback.meta.request_id = reqId;
@@ -611,15 +526,11 @@ Once the self-check passes, output the final JSON object.
     // ----------------------------
     // Coerce + backfill fields
     // ----------------------------
-    const cleaned_question = (
-      payload.cleaned_question || truncated
-    )
+    const cleaned_question = (payload.cleaned_question || truncated)
       .toString()
       .trim();
 
-    const googleRaw = (
-      payload.google_style_query || cleaned_question
-    )
+    const googleRaw = (payload.google_style_query || "")
       .toString()
       .trim();
 
@@ -628,54 +539,29 @@ Once the self-check passes, output the final JSON object.
       googleRaw
     );
 
-    // Full AO raw object (may be missing / partial)
-    const full_raw =
-      payload.full_ai_overview && typeof payload.full_ai_overview === "object"
-        ? payload.full_ai_overview
-        : {};
-
-    const primary_raw =
-      full_raw.primary_answer && typeof full_raw.primary_answer === "object"
-        ? full_raw.primary_answer
-        : {};
-
-    // Answer capsule and mini answer: prefer top-level, then primary_answer, then defaults
     const defaultCapsule =
-      "No capsule answer was generated. Try asking the question more directly or run the engine again.";
+      "It depends—this decision hinges on your actual workload, risk tolerance, and goals, so review traffic, revenue, and performance before committing.";
     const defaultMini =
-      "The engine did not return a full mini answer for this question. Consider re-running the request or simplifying the input for clearer processing.";
+      "The engine did not return a full mini answer for this question. Re-run the request with a clearer, narrower question and compare options based on real metrics.";
 
-    let answer_capsule_25w = (
-      payload.answer_capsule_25w ||
-      primary_raw.answer_capsule_25w ||
-      defaultCapsule
+    const answer_capsule_25w = (
+      payload.answer_capsule_25w || defaultCapsule
     )
       .toString()
       .trim();
 
-    let mini_answer = (
-      payload.mini_answer ||
-      primary_raw.mini_answer ||
-      defaultMini
+    const mini_answer = (
+      payload.mini_answer || defaultMini
     )
       .toString()
       .trim();
 
-    // Next best question: prefer AO-level, then top-level, then default
-    const nbfDefault =
-      "What is the very next detail you would want answered about this question?";
+    const url_slug = buildSlug(
+      payload.url_slug ||
+        google_style_query ||
+        cleaned_question
+    );
 
-    const nbqRaw = (
-      full_raw.next_best_question ||
-      payload.next_best_question ||
-      nbfDefault
-    )
-      .toString()
-      .trim();
-
-    const next_best_question = nbqRaw || nbfDefault;
-
-    // Meta fields
     const meta_title = (
       payload.meta_title ||
       buildMetaTitle(cleaned_question, google_style_query)
@@ -683,45 +569,19 @@ Once the self-check passes, output the final JSON object.
       .toString()
       .trim();
 
-    const meta_summary = (
-      payload.meta_summary ||
-      buildMetaSummary(answer_capsule_25w, mini_answer)
+    const sge_summary = (
+      payload.sge_summary ||
+      buildSgeSummary(answer_capsule_25w, mini_answer)
     )
       .toString()
       .trim();
 
-    // url_slug from payload or built from query/question
-    const url_slug = buildSlug(
-      payload.url_slug ||
-        google_style_query ||
-        cleaned_question
-    );
-
-    // Normalize AO block
-    const key_points = normalizeStringArray(full_raw.key_points, 6);
-    const step_by_step = normalizeStringArray(full_raw.step_by_step, 8);
     const critical_caveat = (
-      full_raw.critical_caveat || ""
+      payload.critical_caveat ||
+      "Hosting, tools, or platforms alone rarely fix deeper business or code issues—you still need clean setups, sound offers, and real testing."
     )
       .toString()
       .trim();
-
-    const follow_up_qa = normalizeFollowUpQA(
-      full_raw.follow_up_qa,
-      4
-    );
-
-    const full_ai_overview = {
-      primary_answer: {
-        answer_capsule_25w,
-        mini_answer
-      },
-      key_points,
-      step_by_step,
-      critical_caveat,
-      follow_up_qa,
-      next_best_question
-    };
 
     const processing_time_ms = Date.now() - startTime;
 
@@ -731,11 +591,10 @@ Once the self-check passes, output the final JSON object.
       google_style_query,
       answer_capsule_25w,
       mini_answer,
-      next_best_question,
       url_slug,
       meta_title,
-      meta_summary,
-      full_ai_overview,
+      sge_summary,
+      critical_caveat,
       meta: {
         request_id: reqId,
         engine_version: ENGINE_VERSION,
@@ -750,16 +609,11 @@ Once the self-check passes, output the final JSON object.
 
     res.status(200).json(responseBody);
   } catch (err) {
-    const reason =
-      err && err.name === "AbortError"
-        ? "OpenAI request timeout"
-        : "unexpected server error";
-
     console.error(
-      `[${reqId}] Unexpected Capsule Engine error:`,
+      `[${reqId}] Unexpected engine error:`,
       err
     );
-    const fallback = buildFallback(raw_input, reason, false);
+    const fallback = buildFallback(raw_input, "unexpected server error", false);
     fallback.meta.request_id = reqId;
     res.status(200).json(fallback);
   }
