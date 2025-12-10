@@ -1,12 +1,13 @@
 // api/inputcheck-run.js
-// Raptor-3.5 YES Answer Capsule Engine – question + URL -> cleaned_question -> google_style_query -> capsule + mini + SGE summary + money-box CTA URL.
+// Raptor-4 Mini Overview Capsule Engine – raw_input -> cleaned_question -> google_style_query -> capsule + mini + SGE summary + mini-insight money box.
 
 "use strict";
 
 // ----------------------------
 // Config
 // ----------------------------
-const OPENAI_MODEL = process.env.INPUTCHECK_MODEL || "gpt-4.1-mini";
+const OPENAI_MODEL =
+  process.env.INPUTCHECK_MODEL || "gpt-4.1-mini";
 const OPENAI_API_URL =
   process.env.OPENAI_API_URL || "https://api.openai.com/v1/chat/completions";
 
@@ -15,8 +16,7 @@ const INPUT_MAX_CHARS = parseInt(
   10
 );
 
-// Version tag for this engine
-const ENGINE_VERSION = "inputcheck-raptor-yes-3.5-lite-2.1";
+const ENGINE_VERSION = "inputcheck-raptor-4-lite-1.0";
 
 // ----------------------------
 // Helpers
@@ -183,7 +183,7 @@ function buildSgeSummary(answerCapsule, miniAnswer) {
   const mini = (miniAnswer || "").toString().trim();
   const combined = (capsule + " " + mini).trim();
   if (!combined) {
-    return "Confirms the buyer’s YES hypothesis, explains how the offer delivers the benefit, and highlights key outcomes in one compact mini answer.";
+    return "Explains the main decision, key conditions, and next considerations in one compact Mini Answer.";
   }
   return combined.length > 200
     ? combined.slice(0, 197) + "..."
@@ -198,13 +198,13 @@ function buildFallback(rawInput, reason, wasTruncated) {
   const url_slug = buildSlug(google_style_query || cleaned_question);
 
   const answer_capsule_25w =
-    "It depends—this fallback appears when the YES engine cannot safely complete your request and should not be used for important or irreversible decisions.";
+    "It depends—this fallback answer appears when the engine cannot safely complete your request and should not be used for important decisions.";
   const mini_answer =
-    "The engine hit a technical or safety limit, so it returned a generic mini answer instead of a tailored YES capsule. Narrow the question and avoid using this for health, legal, or major financial choices.";
+    "The engine hit a technical or safety limit, so it returned a generic Mini Answer instead of a tailored one. Narrow the question and avoid relying on this for health, legal, or major financial choices.";
   const sge_summary =
-    "Fallback YES capsule used when the engine cannot safely generate a grounded response; narrow the question and verify details before acting.";
+    "Fallback Mini Answer used when the engine cannot safely generate a full response; narrow the question and try again before acting.";
   const critical_caveat =
-    "Do not rely on this fallback for critical health, legal, or financial decisions; consult a qualified professional and verify details with an official source.";
+    "Do not rely on this fallback for critical health, legal, or financial decisions; consult a qualified professional.";
 
   return {
     raw_input: safeInput,
@@ -216,8 +216,6 @@ function buildFallback(rawInput, reason, wasTruncated) {
     meta_title: buildMetaTitle(cleaned_question, google_style_query),
     sge_summary,
     critical_caveat,
-    source_url: "",
-    cta_url: "",
     meta: {
       request_id: null,
       engine_version: ENGINE_VERSION,
@@ -268,7 +266,7 @@ export default async function handler(req, res) {
     try {
       body = JSON.parse(body);
     } catch (_err) {
-      // leave as string; we'll fail below if needed
+      // leave as string; we'll fail below
     }
   }
   body = body || {};
@@ -296,162 +294,40 @@ export default async function handler(req, res) {
     wasTruncated = true;
   }
 
-  // Parse "Question ### URL" into question_text + supporting_url
-  let question_text = truncated;
-  let supporting_url = "";
-  const splitterIndex = truncated.indexOf("###");
-  if (splitterIndex !== -1) {
-    question_text = truncated.slice(0, splitterIndex).trim();
-    supporting_url = truncated.slice(splitterIndex + 3).trim();
-  } else {
-    question_text = truncated;
-    supporting_url = "";
-  }
-
   try {
     const systemPrompt = `
-RAPTOR-3.5 YES ANSWER ENGINE – v2.1 · 2025-12-09
+You are "Raptor-4 Mini Overview Capsule Engine" for theanswervault.com.
 
-ROLE
-You are the YES Answer Capsule Engine for AnswerVault (theanswervault.com).
+Raptor Doctrine v1 (Capsules)
+- Anchor every answer in a real buyer making a real decision about a real offer.
+- Do not hallucinate features or guarantees; use neutral, pattern-based advice.
+- For decision questions, start the capsule with "Yes—", "No—", or "It depends—" plus the main condition or trade-off.
+- Compress hard: one 25-word capsule, then a short mini-answer with thresholds, trade-offs, and next steps.
+- Respect YMYL: stay general on health, legal, and major money topics and recommend qualified professionals for specifics.
 
-You do NOT decide if something is a \"yes\" lane.
-You assume every input you receive is already a strong-YES, high-intent benefit hypothesis
-for a serious, scaled buyer.
+Input
+- You receive JSON like {"raw_input":"question plus optional https URL","original_length":n,"was_truncated":bool}.
+- Treat everything before the first "http" as the question. Ignore URLs completely and never output them.
 
-Your job is to:
-- VERIFY the \"yes\",
-- EXPLAIN how the offer delivers that benefit in practice,
-- and EXPRESS it as an AI Overview–style answer capsule plus a short mini-answer.
+Output
+Return ONLY one JSON object with these keys:
+"cleaned_question", "google_style_query", "answer_capsule_25w", "mini_answer",
+"url_slug", "meta_title", "sge_summary", "critical_caveat", "meta".
 
-------------------------
-INPUT FORMAT
-------------------------
-You will receive ONE JSON object from the user message with keys like:
+Field sketch
+- cleaned_question: one clear, answerable question with only decision-shaping context (size, budget, goals, risk, constraints).
+- google_style_query: 3–10 word, lowercase search phrase (entity + condition + decision), no pronouns or platform names.
+- answer_capsule_25w: ~20–25 word sentence that directly answers the cleaned_question; apply the DecisionLock rule for decision questions.
+- mini_answer: 3–5 short sentences explaining why, when the decision flips, who it fits, and what to roughly consider doing next.
+- url_slug: hyphenated slug from google_style_query or cleaned_question.
+- meta_title: short natural-language page/tab title capturing the core decision.
+- sge_summary: ~110–200 character neutral preview summary for meta and <meta name="sge:summary">; no URLs or CTAs.
+- critical_caveat: ONE specific warning, nuance, or constraint that could change the decision if ignored; no URLs, no CTAs, no provider names.
+- meta: {"engine_version":"inputcheck-raptor-4-lite-1.0","model":"gpt-4.1-mini"} (or equivalent values).
 
-{
-  "question_text": "string",
-  "supporting_url": "string",
-  "original_length": number,
-  "was_truncated": boolean,
-  "raw_input": "original line, e.g. 'Question ### URL'"
-}
-
-Semantics:
-- question_text: a single, high-intent, benefit hypothesis–framed decision question.
-- supporting_url: one URL on the same domain that best supports the answer to this question
-  (e.g., pricing page, feature page, SaaS mode page, support article, etc.).
-
-Research behavior:
-- Treat supporting_url as your PRIMARY research anchor.
-- Conceptually \"start\" on that page to understand plans, features, and claims related to the question.
-- You MAY conceptually consider other core pages on the same domain (pricing, features, support, etc.)
-  as light context, but supporting_url remains the main evidence page.
-- Align your description of capabilities, plans, and outcomes with what is plausibly described
-  on or strongly implied by supporting_url and closely related canonical pages.
-- DO NOT hallucinate features that clearly contradict the context of supporting_url.
-
-High-intent lens (internal, not output):
-- A scaled team and/or multi-location operator.
-- Meaningful recurring revenue (not a hobby or solo experiment).
-- Complex, multi-channel or multi-client workflows.
-- Evaluating higher-tier / serious plans, not free or starter-only use.
-
-You NEVER output persona descriptions or research notes.
-You ONLY output the structured answer object described below.
-
-------------------------
-OUTPUT SCHEMA (JSON ONLY)
-------------------------
-Return EXACTLY ONE JSON object with AT LEAST these keys:
-
-- "cleaned_question"
-- "google_style_query"
-- "slug"
-- "answer_capsule_25w"
-- "mini_answer"
-- "source_url"
-- "cta_url"
-- "meta_title"
-- "sge_summary"
-- "critical_caveat"
-- "meta"
-
-Field definitions:
-
-1) cleaned_question
-   - One clear, polished version of question_text with the same benefit hypothesis.
-   - Keep it in natural language as a single question.
-   - Example style: "Can GoHighLevel realistically replace our patchwork of CRM, funnel builder, email/SMS, calendar, and reputation tools with one platform?"
-
-2) google_style_query
-   - A short search-style query (5–10 words, lower case, no question mark).
-   - Include the brand and the core decision concept.
-   - Example: "gohighlevel replace agency crm stack".
-
-3) slug
-   - A URL-safe slug derived from the cleaned_question.
-   - Lowercase, words separated by hyphens, no punctuation.
-   - Example: "gohighlevel-replace-agency-crm-stack".
-
-4) answer_capsule_25w
-   - ~20–25 words, AI Overview–style.
-   - Always express a clear, strong YES plus the core benefit in one compact statement.
-   - Example:
-     "Yes, for scaled agencies, GoHighLevel can replace separate CRM, funnels, messaging, calendar, and reputation tools with one platform so you reduce SaaS bloat and centralize client campaigns."
-
-5) mini_answer
-   - 2–5 sentences expanding the capsule in plain, specific language.
-   - Your posture: "Yes is already decided; here’s how and why it works."
-   - Use supporting_url as your grounding reference (conceptually).
-   - Include:
-     - how the platform delivers the promised benefit (features, plans, workflows),
-     - what the buyer gains (control, margin, reliability, speed),
-     - any practical boundary conditions WITHOUT hedging the yes.
-   - YES opening logic:
-     - If question_text starts with "Can", "Will", "Is", "Are", "Does", "Do", "Could", "Should", "Would", or "If we ... will ...":
-       - start mini_answer with "Yes — ...".
-     - If question_text starts with "How", "What", "Which", "When", "Why", or similar:
-       - do NOT force the literal word "Yes"; start with a direct benefit statement that clearly implies a YES.
-     - If unsure, default to starting with "Yes — ...".
-
-6) source_url
-   - Echo supporting_url EXACTLY as given by the input.
-   - This is the evidence anchor for the answer.
-
-7) cta_url
-   - ALSO echo supporting_url EXACTLY as given.
-   - Downstream UIs will use this as the CTA link in the money-box button.
-   - DO NOT rewrite or invent this URL.
-
-8) meta_title
-   - Short natural-language page/tab title capturing the core decision.
-   - Example: "Can GoHighLevel Replace Our Agency Tech Stack?"
-
-9) sge_summary
-   - ~110–200 characters, neutral preview summary for meta and <meta name="sge:summary">.
-   - Summarize the YES answer and key benefit.
-   - No URLs, no CTAs, no brand hype.
-
-10) critical_caveat
-    - ONE specific warning, nuance, or constraint that could affect the decision if ignored.
-    - Example themes: implementation effort, data migration, team training, contract terms.
-    - No URLs, no CTAs, no provider pitches.
-
-11) meta
-    - An object with at least:
-      {
-        "engine_version": "inputcheck-raptor-yes-3.5-lite-2.1",
-        "model": "gpt-4.1-mini"
-      }
-
-------------------------
-CONSTRAINTS
-------------------------
-- Output ONLY the single JSON object, with no extra text, no markdown.
-- Never include marketing fluff or pushy sales language.
-- Never contradict the likely context of supporting_url.
-- Assume a smart, time-constrained, high-intent buyer who wants clear, confident reasoning.
+Constraints
+- Output ONLY that JSON object, no markdown or extra text.
+- Never include URLs, brand pitches, or salesy language in any field.
 `.trim();
 
     let completion;
@@ -473,11 +349,9 @@ CONSTRAINTS
             {
               role: "user",
               content: JSON.stringify({
-                question_text,
-                supporting_url,
+                raw_input: truncated,
                 original_length: raw_input.length,
-                was_truncated: wasTruncated,
-                raw_input: truncated
+                was_truncated: wasTruncated
               })
             }
           ]
@@ -513,7 +387,8 @@ CONSTRAINTS
       return;
     }
 
-    const content = completion?.choices?.[0]?.message?.content || "{}";
+    const content =
+      completion?.choices?.[0]?.message?.content || "{}";
 
     let payload;
     try {
@@ -536,10 +411,8 @@ CONSTRAINTS
 
     // ----------------------------
     // Coerce + backfill fields
-    // ----------------------------
-    const cleaned_question = (
-      payload.cleaned_question || question_text
-    )
+    //-----------------------------
+    const cleaned_question = (payload.cleaned_question || truncated)
       .toString()
       .trim();
 
@@ -553,9 +426,9 @@ CONSTRAINTS
     );
 
     const defaultCapsule =
-      "It depends—this decision hinges on your real workload, revenue, and risk tolerance, so compare concrete performance and costs before committing fully to one platform.";
+      "It depends—this decision hinges on your actual workload, risk tolerance, and goals, so review traffic, revenue, and performance before committing.";
     const defaultMini =
-      "The YES engine did not return a full mini answer for this question. Re-run with a clearer, more specific decision question and verify details on the official site before acting.";
+      "The engine did not return a full mini answer for this question. Re-run the request with a clearer, narrower question and compare options based on real metrics.";
 
     const answer_capsule_25w = (
       payload.answer_capsule_25w || defaultCapsule
@@ -563,17 +436,17 @@ CONSTRAINTS
       .toString()
       .trim();
 
-    const mini_answer = (payload.mini_answer || defaultMini)
+    const mini_answer = (
+      payload.mini_answer || defaultMini
+    )
       .toString()
       .trim();
 
-    const slugRaw =
-      payload.slug ||
+    const url_slug = buildSlug(
       payload.url_slug ||
-      google_style_query ||
-      cleaned_question;
-
-    const url_slug = buildSlug(slugRaw);
+        google_style_query ||
+        cleaned_question
+    );
 
     const meta_title = (
       payload.meta_title ||
@@ -591,19 +464,7 @@ CONSTRAINTS
 
     const critical_caveat = (
       payload.critical_caveat ||
-      "Platform choices still require careful migration planning, team training, and contract review; do not switch tooling without validating fit and implementation effort."
-    )
-      .toString()
-      .trim();
-
-    const source_url = (
-      payload.source_url || supporting_url || ""
-    )
-      .toString()
-      .trim();
-
-    const cta_url = (
-      payload.cta_url || supporting_url || ""
+      "Hosting, tools, or platforms alone rarely fix deeper business or code issues—you still need clean setups, sound offers, and real testing."
     )
       .toString()
       .trim();
@@ -620,8 +481,6 @@ CONSTRAINTS
       meta_title,
       sge_summary,
       critical_caveat,
-      source_url,
-      cta_url,
       meta: {
         request_id: reqId,
         engine_version: ENGINE_VERSION,
@@ -636,12 +495,11 @@ CONSTRAINTS
 
     res.status(200).json(responseBody);
   } catch (err) {
-    console.error(`[${reqId}] Unexpected engine error:`, err);
-    const fallback = buildFallback(
-      raw_input,
-      "unexpected server error",
-      false
+    console.error(
+      `[${reqId}] Unexpected engine error:`,
+      err
     );
+    const fallback = buildFallback(raw_input, "unexpected server error", false);
     fallback.meta.request_id = reqId;
     res.status(200).json(fallback);
   }
