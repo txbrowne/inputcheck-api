@@ -1,4 +1,4 @@
-// api/raptor4-entity-stack.js
+// api/raptor4-entity-stack-run.js
 // Raptor-4 Entity Stack → CPDC Engine
 // Input: full entity_stack JSON (parent + child_entities)
 // Output: Canonical Product Definition Capsules (CPDC) JSON
@@ -12,7 +12,8 @@ const OPENAI_MODEL = process.env.RAPTOR4_MODEL || "gpt-4.1-mini";
 const OPENAI_API_URL =
   process.env.OPENAI_API_URL || "https://api.openai.com/v1/chat/completions";
 
-const ENGINE_VERSION = "raptor4-entity-stack-v1";
+// Engine ID used in responses
+const ENGINE_ID = "raptor4_entity_stack_v1";
 
 // ----------------------------
 // Helpers
@@ -38,14 +39,14 @@ function buildFallback(entity_name, entity_root_url, reason) {
   const safeUrl = (entity_root_url || "").toString().trim() || "";
 
   return {
-    engine: ENGINE_VERSION,
+    engine: ENGINE_ID,
     ok: false,
     entity_name: safeName,
     entity_root_url: safeUrl,
     cpdc: [],
     meta: {
       model: OPENAI_MODEL,
-      engine_version: ENGINE_VERSION,
+      engine_version: ENGINE_ID,
       backend_error: true,
       reason: reason || "fallback",
       request_id: null,
@@ -83,7 +84,7 @@ export default async function handler(req, res) {
   }
 
   // ----------------------------
-  // Parse body (full entity_stack JSON)
+  // Parse body (full entity_stack JSON – same as your NVIDIA blob)
   // ----------------------------
   let body = req.body;
   if (typeof body === "string") {
@@ -97,9 +98,18 @@ export default async function handler(req, res) {
   }
   body = body || {};
 
-  const engine = (body.engine || "").toString().trim();
   const entity_name = (body.entity_name || "").toString().trim();
   const entity_root_url = (body.entity_root_url || "").toString().trim();
+
+  if (!entity_name || !entity_root_url) {
+    res.status(400).json({
+      error: "entity_name and entity_root_url are required"
+    });
+    return;
+  }
+
+  // Pull out fields we care about (and pass child_entities through)
+  const engine = (body.engine || "").toString().trim();
   const entity_type = (body.entity_type || "").toString().trim();
   const primary_lane = (body.primary_lane || "").toString().trim();
   const short_handle = (body.short_handle || "").toString().trim();
@@ -108,13 +118,6 @@ export default async function handler(req, res) {
   const child_entities = Array.isArray(body.child_entities)
     ? body.child_entities
     : [];
-
-  if (!entity_name || !entity_root_url) {
-    res.status(400).json({
-      error: "entity_name and entity_root_url are required"
-    });
-    return;
-  }
 
   // ----------------------------
   // Raptor-4 CPDC System Prompt
@@ -200,6 +203,7 @@ Rules:
           { role: "system", content: systemPrompt },
           {
             role: "user",
+            // Pass the entity stack through, already cleaned
             content: JSON.stringify({
               engine,
               entity_name,
@@ -262,23 +266,23 @@ Rules:
       entity_root_url,
       "invalid_json_from_model"
     );
-    fb.meta.request_id = reqId;
-    fb.meta.processing_time_ms = Date.now() - startTime;
-    res.status(500).json(fb);
-    return;
+      fb.meta.request_id = reqId;
+      fb.meta.processing_time_ms = Date.now() - startTime;
+      res.status(500).json(fb);
+      return;
   }
 
   const processing_time_ms = Date.now() - startTime;
 
   const responseBody = {
-    engine: ENGINE_VERSION,
+    engine: ENGINE_ID,
     ok: true,
     entity_name,
     entity_root_url,
     cpdc: Array.isArray(payload.cpdc) ? payload.cpdc : [],
     meta: {
       model: OPENAI_MODEL,
-      engine_version: ENGINE_VERSION,
+      engine_version: ENGINE_ID,
       backend_error: false,
       reason: "",
       request_id: reqId,
