@@ -34,11 +34,11 @@ function makeRequestId() {
 }
 
 // Fallback error payload if OpenAI or server fails
-function buildFallback(entity_name, entity_root_url, reason, rawModelContent) {
+function buildFallback(entity_name, entity_root_url, reason) {
   const safeName = (entity_name || "").toString().trim() || "UNKNOWN_ENTITY";
   const safeUrl = (entity_root_url || "").toString().trim() || "";
 
-  const payload = {
+  return {
     engine: ENGINE_ID,
     ok: false,
     entity_name: safeName,
@@ -53,46 +53,30 @@ function buildFallback(entity_name, entity_root_url, reason, rawModelContent) {
       processing_time_ms: null
     }
   };
-
-  // Optional: expose raw model content for debugging if parse fails
-  if (rawModelContent) {
-    payload.raw_model_content = rawModelContent;
-  }
-
-  return payload;
 }
 
-// Try to robustly parse model JSON, handling common issues like ```json fences
-function safeParseModelContent(raw) {
-  if (typeof raw !== "string") return null;
-
-  // First attempt: strict parse
-  try {
-    return JSON.parse(raw);
-  } catch (_err) {
-    // fall through
+// Try to safely parse model content into JSON
+function safeParseModelContent(rawContent, reqId) {
+  if (!rawContent || typeof rawContent !== "string") {
+    console.error(`[${reqId}] Model content is not a string`, rawContent);
+    throw new Error("model_content_not_string");
   }
 
-  let cleaned = raw.trim();
+  let trimmed = rawContent.trim();
 
-  // Strip markdown code fences like ```json ... ```
-  if (cleaned.startsWith("```")) {
-    // Remove opening fence and optional language tag
-    cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "");
-    // Remove trailing fence
-    if (cleaned.endsWith("```")) {
-      cleaned = cleaned.slice(0, -3);
+  // If model ever wraps in ```json fences, strip them
+  if (trimmed.startsWith("```")) {
+    const firstFenceEnd = trimmed.indexOf("\n");
+    const lastFenceStart = trimmed.lastIndexOf("```");
+    if (firstFenceEnd !== -1 && lastFenceStart !== -1 && lastFenceStart > firstFenceEnd) {
+      trimmed = trimmed.slice(firstFenceEnd + 1, lastFenceStart).trim();
     }
-    cleaned = cleaned.trim();
   }
 
-  // Second attempt: parse cleaned JSON
-  try {
-    return JSON.parse(cleaned);
-  } catch (_err2) {
-    // If this still fails, give up and let the caller decide
-    return null;
-  }
+  // Log first part of content for debugging
+  console.log(`[${reqId}] Raw model content (first 400 chars):`, trimmed.slice(0, 400));
+
+  return JSON.parse(trimmed);
 }
 
 // ----------------------------
@@ -221,7 +205,7 @@ Rules:
 - Keep capsules concrete, neutral, and definitional (like a high-quality dictionary for products).
 - Never write sales copy or hype.
 - Answer canonical_question implicitly: define the entity and who/when it’s for.
-- Output MUST be valid JSON, no markdown, no code fences, no extra commentary.
+- Output MUST be a single valid JSON object. No markdown, no code fences, no commentary.
 `.trim();
 
   // ----------------------------
@@ -239,7 +223,8 @@ Rules:
         model: OPENAI_MODEL,
         response_format: { type: "json_object" },
         temperature: 0.1,
-        max_tokens: 1400,
+        // Bump output room for NVIDIA-scale stacks
+        max_tokens: 2600,
         messages: [
           { role: "system", content: systemPrompt },
           {
@@ -263,7 +248,10 @@ Rules:
 
     if (!openaiRes.ok) {
       const text = await openaiRes.text();
-      console.error(`[${reqId}] OpenAI error ${openaiRes.status}:`, text);
+      console.error(
+        `[${reqId}] OpenAI error ${openaiRes.status}:`,
+        text
+      );
       const fb = buildFallback(
         entity_name,
         entity_root_url,
@@ -289,18 +277,20 @@ Rules:
     return;
   }
 
-  const rawContent = completion?.choices?.[0]?.message?.content || "{}";
+  const content = completion?.choices?.[0]?.message?.content || "{}";
 
-  let payload = safeParseModelContent(rawContent);
-  if (!payload) {
+  let payload;
+  try {
+    payload = safeParseModelContent(content, reqId);
+  } catch (err) {
     console.error(
-      `[${reqId}] JSON parse error from model content; returning fallback`
+      `[${reqId}] JSON parse error from model content`,
+      err
     );
     const fb = buildFallback(
       entity_name,
       entity_root_url,
-      "invalid_json_from_model",
-      rawContent
+      "invalid_json_from_model"
     );
     fb.meta.request_id = reqId;
     fb.meta.processing_time_ms = Date.now() - startTime;
