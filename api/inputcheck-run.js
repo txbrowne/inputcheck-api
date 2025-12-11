@@ -57,6 +57,12 @@ function buildFallback(entity_name, entity_root_url, reason) {
 
 // Try to safely parse model content into JSON
 function safeParseModelContent(rawContent, reqId) {
+  // If the SDK ever returns an object here, just trust it.
+  if (rawContent && typeof rawContent === "object") {
+    console.log(`[${reqId}] Model content already object; using directly.`);
+    return rawContent;
+  }
+
   if (!rawContent || typeof rawContent !== "string") {
     console.error(`[${reqId}] Model content is not a string`, rawContent);
     throw new Error("model_content_not_string");
@@ -74,9 +80,39 @@ function safeParseModelContent(rawContent, reqId) {
   }
 
   // Log first part of content for debugging
-  console.log(`[${reqId}] Raw model content (first 400 chars):`, trimmed.slice(0, 400));
+  console.log(
+    `[${reqId}] Raw model content (first 400 chars):`,
+    trimmed.slice(0, 400)
+  );
 
-  return JSON.parse(trimmed);
+  // First attempt: parse as-is
+  try {
+    return JSON.parse(trimmed);
+  } catch (err1) {
+    console.error(`[${reqId}] First JSON.parse failed, attempting salvage`, err1);
+
+    // Salvage attempt: take from first '{' to last '}' and parse that slice
+    const firstBrace = trimmed.indexOf("{");
+    const lastBrace = trimmed.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      const sliced = trimmed.slice(firstBrace, lastBrace + 1);
+      try {
+        console.log(
+          `[${reqId}] Retrying JSON.parse with sliced content (first 400 chars):`,
+          sliced.slice(0, 400)
+        );
+        return JSON.parse(sliced);
+      } catch (err2) {
+        console.error(
+          `[${reqId}] Salvage JSON.parse failed`,
+          err2
+        );
+        throw err2;
+      }
+    }
+
+    throw err1;
+  }
 }
 
 // ----------------------------
@@ -223,8 +259,8 @@ Rules:
         model: OPENAI_MODEL,
         response_format: { type: "json_object" },
         temperature: 0.1,
-        // Bump output room for NVIDIA-scale stacks
-        max_tokens: 2600,
+        // More room for NVIDIA-scale stacks
+        max_tokens: 4000,
         messages: [
           { role: "system", content: systemPrompt },
           {
@@ -277,7 +313,7 @@ Rules:
     return;
   }
 
-  const content = completion?.choices?.[0]?.message?.content || "{}";
+  const content = completion?.choices?.[0]?.message?.content ?? "{}";
 
   let payload;
   try {
