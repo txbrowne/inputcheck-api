@@ -1,4 +1,4 @@
-// api/inputcheck-run.js
+// api/raptor4-entity-stack-run.js
 // Raptor-4 Entity Stack → CPDC Engine
 // Input: full entity_stack JSON (parent + child_entities)
 // Output: Canonical Product Definition Capsules (CPDC) JSON
@@ -34,11 +34,11 @@ function makeRequestId() {
 }
 
 // Fallback error payload if OpenAI or server fails
-function buildFallback(entity_name, entity_root_url, reason) {
+function buildFallback(entity_name, entity_root_url, reason, rawModelContent) {
   const safeName = (entity_name || "").toString().trim() || "UNKNOWN_ENTITY";
   const safeUrl = (entity_root_url || "").toString().trim() || "";
 
-  return {
+  const payload = {
     engine: ENGINE_ID,
     ok: false,
     entity_name: safeName,
@@ -53,6 +53,46 @@ function buildFallback(entity_name, entity_root_url, reason) {
       processing_time_ms: null
     }
   };
+
+  // Optional: expose raw model content for debugging if parse fails
+  if (rawModelContent) {
+    payload.raw_model_content = rawModelContent;
+  }
+
+  return payload;
+}
+
+// Try to robustly parse model JSON, handling common issues like ```json fences
+function safeParseModelContent(raw) {
+  if (typeof raw !== "string") return null;
+
+  // First attempt: strict parse
+  try {
+    return JSON.parse(raw);
+  } catch (_err) {
+    // fall through
+  }
+
+  let cleaned = raw.trim();
+
+  // Strip markdown code fences like ```json ... ```
+  if (cleaned.startsWith("```")) {
+    // Remove opening fence and optional language tag
+    cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "");
+    // Remove trailing fence
+    if (cleaned.endsWith("```")) {
+      cleaned = cleaned.slice(0, -3);
+    }
+    cleaned = cleaned.trim();
+  }
+
+  // Second attempt: parse cleaned JSON
+  try {
+    return JSON.parse(cleaned);
+  } catch (_err2) {
+    // If this still fails, give up and let the caller decide
+    return null;
+  }
 }
 
 // ----------------------------
@@ -77,9 +117,8 @@ export default async function handler(req, res) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     console.error(`[${reqId}] Missing OPENAI_API_KEY`);
-    const fb = buildFallback("", "", "missing OPENAI_API_KEY on server");
+    const fb = buildFallback("", "", "missing_OPENAI_API_KEY_on_server");
     fb.meta.request_id = reqId;
-    fb.meta.processing_time_ms = Date.now() - startTime;
     res.status(500).json(fb);
     return;
   }
@@ -182,6 +221,7 @@ Rules:
 - Keep capsules concrete, neutral, and definitional (like a high-quality dictionary for products).
 - Never write sales copy or hype.
 - Answer canonical_question implicitly: define the entity and who/when it’s for.
+- Output MUST be valid JSON, no markdown, no code fences, no extra commentary.
 `.trim();
 
   // ----------------------------
@@ -223,10 +263,7 @@ Rules:
 
     if (!openaiRes.ok) {
       const text = await openaiRes.text();
-      console.error(
-        `[${reqId}] OpenAI error ${openaiRes.status}:`,
-        text
-      );
+      console.error(`[${reqId}] OpenAI error ${openaiRes.status}:`, text);
       const fb = buildFallback(
         entity_name,
         entity_root_url,
@@ -252,20 +289,18 @@ Rules:
     return;
   }
 
-  const content = completion?.choices?.[0]?.message?.content || "{}";
-  let payload;
-  try {
-    payload = JSON.parse(content);
-  } catch (err) {
+  const rawContent = completion?.choices?.[0]?.message?.content || "{}";
+
+  let payload = safeParseModelContent(rawContent);
+  if (!payload) {
     console.error(
-      `[${reqId}] JSON parse error from model content`,
-      err,
-      content
+      `[${reqId}] JSON parse error from model content; returning fallback`
     );
     const fb = buildFallback(
       entity_name,
       entity_root_url,
-      "invalid_json_from_model"
+      "invalid_json_from_model",
+      rawContent
     );
     fb.meta.request_id = reqId;
     fb.meta.processing_time_ms = Date.now() - startTime;
