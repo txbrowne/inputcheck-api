@@ -1,22 +1,16 @@
-// api/inputcheck-run.js
-// Raptor-3.5 YES Answer Capsule Engine – question + URL -> cleaned_question -> google_style_query -> capsule + mini + SGE summary + money-box CTA URL.
+// api/raptor4-entity-stack.js
+// Raptor-4 Entity Stack Lane Engine – entity_root_url -> ENTITY + child_entities (CPDC-ready)
 
 "use strict";
 
 // ----------------------------
 // Config
 // ----------------------------
-const OPENAI_MODEL = process.env.INPUTCHECK_MODEL || "gpt-4.1-mini";
+const OPENAI_MODEL = process.env.RAPTOR4_MODEL || "gpt-4.1-mini";
 const OPENAI_API_URL =
   process.env.OPENAI_API_URL || "https://api.openai.com/v1/chat/completions";
 
-const INPUT_MAX_CHARS = parseInt(
-  process.env.INPUTCHECK_MAX_CHARS || "2000",
-  10
-);
-
-// Version tag for this engine
-const ENGINE_VERSION = "inputcheck-raptor-yes-3.5-lite-2.1";
+const ENGINE_VERSION = "raptor4-entity-stack-v1.0";
 
 // ----------------------------
 // Helpers
@@ -29,204 +23,35 @@ function setCorsHeaders(res) {
 
 function makeRequestId() {
   return (
-    "ic_" +
+    "r4_" +
     Date.now().toString(36) +
     "_" +
     Math.random().toString(36).slice(2, 8)
   );
 }
 
-// Small stopword list for Google-style query compression
-const STOPWORDS = new Set([
-  "the",
-  "a",
-  "an",
-  "to",
-  "of",
-  "for",
-  "with",
-  "and",
-  "or",
-  "is",
-  "are",
-  "am",
-  "be",
-  "was",
-  "were",
-  "do",
-  "does",
-  "did",
-  "on",
-  "in",
-  "at",
-  "from",
-  "about",
-  "that",
-  "this",
-  "these",
-  "those",
-  "my",
-  "our",
-  "your",
-  "their",
-  "me",
-  "i",
-  "we",
-  "you",
-  "they",
-  "just",
-  "really",
-  "actually",
-  "kind",
-  "sort",
-  "like",
-  "best",
-  "order",
-  "extra",
-  "use",
-  "using",
-  "help",
-  "need",
-  "want",
-  "should",
-  "would",
-  "could",
-  "can",
-  "will",
-  "tiktok",
-  "youtube",
-  "reddit",
-  "twitter",
-  "facebook"
-]);
-
-// Build a compressed Google-style query from any source text
-function buildGoogleStyleQuery(source) {
-  const safe = (source || "").toString().toLowerCase().trim();
-  if (!safe) return "";
-
-  const hadQuestionMark = safe.includes("?");
-  const stripped = safe.replace(/[^a-z0-9\s]/g, " ");
-  const rawWords = stripped.split(/\s+/).filter(Boolean);
-
-  let kept = rawWords.filter((w) => !STOPWORDS.has(w));
-  if (kept.length < 3) {
-    kept = rawWords.slice(0, 8);
-  }
-
-  kept = kept.slice(0, 10);
-
-  let query = kept.join(" ").trim();
-  if (!query) {
-    query = rawWords.slice(0, 8).join(" ").trim();
-  }
-
-  if (!query) return "";
-
-  if (hadQuestionMark && !query.endsWith("?")) {
-    query += "?";
-  }
-
-  return query;
-}
-
-// Ensure google_style_query is short and not a near-duplicate of the question
-function normalizeGoogleQuery(cleanedQuestion, googleRaw) {
-  const base = (cleanedQuestion || "").toString().trim();
-  const cand = (googleRaw || "").toString().trim();
-
-  if (!base && !cand) return "";
-
-  const baseNorm = base.toLowerCase().replace(/\s+/g, " ").trim();
-  const candNorm = cand.toLowerCase().replace(/\s+/g, " ").trim();
-
-  const wordCount = candNorm ? candNorm.split(" ").length : 0;
-  const tooLong = wordCount > 10 || candNorm.length > 120;
-
-  const tooSimilar =
-    !!candNorm &&
-    (candNorm === baseNorm ||
-      baseNorm.includes(candNorm) ||
-      candNorm.includes(baseNorm));
-
-  if (!candNorm || tooLong || tooSimilar) {
-    return buildGoogleStyleQuery(base || cand);
-  }
-
-  return candNorm;
-}
-
-// Simple slug generator
-function buildSlug(text) {
-  const safe = (text || "").toString().toLowerCase().trim();
-  if (!safe) return "inputcheck-node";
-  return (
-    safe
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 80) || "inputcheck-node"
-  );
-}
-
-// Build a basic meta_title from the cleaned question or query
-function buildMetaTitle(cleanedQuestion, googleQuery) {
-  const base =
-    (cleanedQuestion || "").toString().trim() ||
-    (googleQuery || "").toString().trim();
-  if (!base) return "InputCheck mini answer";
-  return base.length > 70 ? base.slice(0, 67) + "..." : base;
-}
-
-// Build a compact SGE/meta summary from capsule + mini
-function buildSgeSummary(answerCapsule, miniAnswer) {
-  const capsule = (answerCapsule || "").toString().trim();
-  const mini = (miniAnswer || "").toString().trim();
-  const combined = (capsule + " " + mini).trim();
-  if (!combined) {
-    return "Confirms the buyer’s YES hypothesis, explains how the offer delivers the benefit, and highlights key outcomes in one compact mini answer.";
-  }
-  return combined.length > 200
-    ? combined.slice(0, 197) + "..."
-    : combined;
-}
-
-// Fallback payload if OpenAI fails
-function buildFallback(rawInput, reason, wasTruncated) {
-  const safeInput = (rawInput || "").toString().trim();
-  const cleaned_question = safeInput || "InputCheck engine fallback answer";
-  const google_style_query = buildGoogleStyleQuery(cleaned_question);
-  const url_slug = buildSlug(google_style_query || cleaned_question);
-
-  const answer_capsule_25w =
-    "It depends—this fallback appears when the YES engine cannot safely complete your request and should not be used for important or irreversible decisions.";
-  const mini_answer =
-    "The engine hit a technical or safety limit, so it returned a generic mini answer instead of a tailored YES capsule. Narrow the question and avoid using this for health, legal, or major financial choices.";
-  const sge_summary =
-    "Fallback YES capsule used when the engine cannot safely generate a grounded response; narrow the question and verify details before acting.";
-  const critical_caveat =
-    "Do not rely on this fallback for critical health, legal, or financial decisions; consult a qualified professional and verify details with an official source.";
+function buildFallback(entity_name, entity_root_url, reason) {
+  const safeName = (entity_name || "").toString().trim() || "UNKNOWN_ENTITY";
+  const safeUrl = (entity_root_url || "").toString().trim() || "";
 
   return {
-    raw_input: safeInput,
-    cleaned_question,
-    google_style_query,
-    answer_capsule_25w,
-    mini_answer,
-    url_slug,
-    meta_title: buildMetaTitle(cleaned_question, google_style_query),
-    sge_summary,
-    critical_caveat,
-    source_url: "",
-    cta_url: "",
+    engine: "raptor4_entity_stack_v1",
+    entity_name: safeName,
+    entity_root_url: safeUrl,
+    entity_type: "unknown",
+    primary_lane: "unknown",
+    short_handle: safeName.toLowerCase().replace(/[^a-z0-9]+/g, "_"),
+    summary_25w:
+      "Fallback entity record returned when the Raptor-4 engine cannot complete; do not treat this as a canonical definition.",
+    notes: reason || "fallback",
+    child_entities: [],
     meta: {
-      request_id: null,
       engine_version: ENGINE_VERSION,
       model: OPENAI_MODEL,
-      processing_time_ms: null,
-      input_length_chars: safeInput.length,
-      was_truncated: Boolean(wasTruncated),
       backend_error: true,
-      reason: reason || "fallback"
+      reason: reason || "fallback",
+      request_id: null,
+      processing_time_ms: null
     }
   };
 }
@@ -252,397 +77,259 @@ export default async function handler(req, res) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     console.error(`[${reqId}] Missing OPENAI_API_KEY`);
-    const fallback = buildFallback(
-      "",
-      "missing OPENAI_API_KEY on server",
-      false
-    );
-    fallback.meta.request_id = reqId;
-    res.status(200).json(fallback);
+    const fb = buildFallback("", "", "missing OPENAI_API_KEY on server");
+    fb.meta.request_id = reqId;
+    res.status(200).json(fb);
     return;
   }
 
-  // Body parsing (supports Next.js / Vercel where req.body may already be an object)
+  // ----------------------------
+  // Parse body
+  // ----------------------------
   let body = req.body;
   if (typeof body === "string") {
     try {
       body = JSON.parse(body);
     } catch (_err) {
-      // leave as string; we'll fail below if needed
+      body = {};
     }
   }
   body = body || {};
 
-  let raw_input = "";
-  try {
-    raw_input = (body.raw_input || "").toString();
-  } catch (err) {
-    console.error(`[${reqId}] Invalid raw_input in body:`, err);
-    res.status(400).json({ error: "raw_input must be a string" });
+  const entity_name = (body.entity_name || "").toString().trim();
+  const entity_root_url = (body.entity_root_url || "").toString().trim();
+  const entity_type_hint = (body.entity_type_hint || "").toString().trim();
+  const primary_lane_hint = (body.primary_lane_hint || "").toString().trim();
+  const notes = (body.notes || "").toString().trim();
+
+  if (!entity_name || !entity_root_url) {
+    res.status(400).json({
+      error: "entity_name and entity_root_url are required"
+    });
     return;
   }
 
-  raw_input = raw_input.trim();
-  if (!raw_input) {
-    res.status(400).json({ error: "raw_input is required" });
-    return;
-  }
-
-  // Enforce max length
-  let truncated = raw_input;
-  let wasTruncated = false;
-  if (truncated.length > INPUT_MAX_CHARS) {
-    truncated = truncated.slice(0, INPUT_MAX_CHARS);
-    wasTruncated = true;
-  }
-
-  // Parse "Question ### URL" into question_text + supporting_url
-  let question_text = truncated;
-  let supporting_url = "";
-  const splitterIndex = truncated.indexOf("###");
-  if (splitterIndex !== -1) {
-    question_text = truncated.slice(0, splitterIndex).trim();
-    supporting_url = truncated.slice(splitterIndex + 3).trim();
-  } else {
-    question_text = truncated;
-    supporting_url = "";
-  }
-
-  try {
-    const systemPrompt = `
-RAPTOR-3.5 YES ANSWER ENGINE – v2.1 · 2025-12-09
+  // ----------------------------
+  // Raptor-4 Entity Stack System Prompt
+  // ----------------------------
+  const systemPrompt = `
+RAPTOR-4 ENTITY STACK LANE ENGINE – v1.0
 
 ROLE
-You are the YES Answer Capsule Engine for AnswerVault (theanswervault.com).
+You are Raptor-4, the Entity Stack Lane Engine for AnswerVault.
+Your job: given ONE top-level entity (usually a company or flagship product) and its root URL,
+you manufacture a high-resolution ENTITY STACK ready for Canonical Product Definition Capsules (CPDCs).
 
-You do NOT decide if something is a \"yes\" lane.
-You assume every input you receive is already a strong-YES, high-intent benefit hypothesis
-for a serious, scaled buyer.
-
-Your job is to:
-- VERIFY the \"yes\",
-- EXPLAIN how the offer delivers that benefit in practice,
-- and EXPRESS it as an AI Overview–style answer capsule plus a short mini-answer.
+You DO NOT write sales copy.
+You DO NOT output prose paragraphs.
+You ONLY output ONE JSON object describing:
+- the parent entity, and
+- a focused list of child entities that each deserve their own CPDC later.
 
 ------------------------
-INPUT FORMAT
+INPUT (user message JSON)
 ------------------------
-You will receive ONE JSON object from the user message with keys like:
+You will receive a JSON object like:
 
 {
-  "question_text": "string",
-  "supporting_url": "string",
-  "original_length": number,
-  "was_truncated": boolean,
-  "raw_input": "original line, e.g. 'Question ### URL'"
+  "entity_name": "NVIDIA",
+  "entity_root_url": "https://www.nvidia.com/en-us/",
+  "entity_type_hint": "company | product | platform | brand | other",
+  "primary_lane_hint": "optional lane / niche hint",
+  "notes": "optional internal notes from the operator"
 }
 
 Semantics:
-- question_text: a single, high-intent, benefit hypothesis–framed decision question.
-- supporting_url: one URL on the same domain that best supports the answer to this question
-  (e.g., pricing page, feature page, SaaS mode page, support article, etc.).
+- entity_name: the canonical name of the parent entity.
+- entity_root_url: the main, official URL that best represents this entity.
+- entity_type_hint: optional; you may override if the web evidence clearly indicates a better type.
+- primary_lane_hint: optional; rough lane like "AI & accelerated computing", "email marketing SaaS", etc.
+- notes: optional operator hints; do not echo into output.
 
-Research behavior:
-- Treat supporting_url as your PRIMARY research anchor.
-- Conceptually \"start\" on that page to understand plans, features, and claims related to the question.
-- You MAY conceptually consider other core pages on the same domain (pricing, features, support, etc.)
-  as light context, but supporting_url remains the main evidence page.
-- Align your description of capabilities, plans, and outcomes with what is plausibly described
-  on or strongly implied by supporting_url and closely related canonical pages.
-- DO NOT hallucinate features that clearly contradict the context of supporting_url.
+Research behaviour (conceptual, not literal browsing):
+- Treat entity_root_url as your primary evidence anchor.
+- Infer what this entity is, what lane it plays in, and what its major product lines / platforms are.
+- Build a compact but complete mental map of:
+  - who this entity serves,
+  - how it makes money,
+  - which products or platforms carry the most strategic weight.
 
-High-intent lens (internal, not output):
-- A scaled team and/or multi-location operator.
-- Meaningful recurring revenue (not a hobby or solo experiment).
-- Complex, multi-channel or multi-client workflows.
-- Evaluating higher-tier / serious plans, not free or starter-only use.
-
-You NEVER output persona descriptions or research notes.
-You ONLY output the structured answer object described below.
+High-level intent:
+- The output will feed a Canonical Product Definition Capsule engine later.
+- Every child entity you include should be important enough to merit its own “What is X and who is it for?” CPDC.
+- Prioritize clarity, lane coverage, and monetizable / high-intent surfaces over long tail trivia.
 
 ------------------------
 OUTPUT SCHEMA (JSON ONLY)
 ------------------------
-Return EXACTLY ONE JSON object with AT LEAST these keys:
+Return EXACTLY ONE JSON object with these top-level keys:
 
-- "cleaned_question"
-- "google_style_query"
-- "slug"
-- "answer_capsule_25w"
-- "mini_answer"
-- "source_url"
-- "cta_url"
-- "meta_title"
-- "sge_summary"
-- "critical_caveat"
-- "meta"
+{
+  "engine": "raptor4_entity_stack_v1",
+  "entity_name": "string",
+  "entity_root_url": "string",
+  "entity_type": "company | product | platform | brand | other",
+  "primary_lane": "short lane description",
+  "short_handle": "machine_friendly_handle",
+  "summary_25w": "≈25-word canonical definition of the parent entity",
+  "notes": "short operator-facing note about the scope of this entity stack",
+  "child_entities": [ ... child objects ... ]
+}
 
-Field definitions:
+Rules:
 
-1) cleaned_question
-   - One clear, polished version of question_text with the same benefit hypothesis.
-   - Keep it in natural language as a single question.
-   - Example style: "Can GoHighLevel realistically replace our patchwork of CRM, funnel builder, email/SMS, calendar, and reputation tools with one platform?"
+- engine: ALWAYS "raptor4_entity_stack_v1".
+- entity_name: cleaned, human-readable name.
+- entity_root_url: echo the main URL.
+- entity_type: your best fit (company, product, platform, brand, other).
+- primary_lane: one concise lane like "AI & accelerated computing", "email marketing SaaS", "consumer EV manufacturer".
+- short_handle: lower_snake_case or lower_kebab-case handle derived from the entity name (e.g. "nvidia_corporation").
+- summary_25w: a tight, ≈25-word canonical definition suitable for an AI Overview.
+- notes: 1–2 sentences, internal only, explaining what this stack covers.
 
-2) google_style_query
-   - A short search-style query (5–10 words, lower case, no question mark).
-   - Include the brand and the core decision concept.
-   - Example: "gohighlevel replace agency crm stack".
+child_entities: an ARRAY of child entity objects.
+Each child entity MUST have at least:
 
-3) slug
-   - A URL-safe slug derived from the cleaned_question.
-   - Lowercase, words separated by hyphens, no punctuation.
-   - Example: "gohighlevel-replace-agency-crm-stack".
+{
+  "name": "string",
+  "entity_type": "product | product_family | platform | service | program | other",
+  "tier_role": "core_flagship | mid_core | niche",
+  "primary_customer_archetype": "1–2 sentence description of who buys/uses this",
+  "lane": "short lane / category for this child",
+  "canonical_question": "What is X and who is it for?",
+  "search_intent_cluster": ["what is x", "x pricing", "x vs alternative", "x use cases"],
+  "priority_score": 1–10,
+  "cpdc_needed": true | false,
+  "notes": "1–2 sentences of internal guidance for CPDC writers"
+}
 
-4) answer_capsule_25w
-   - ~20–25 words, AI Overview–style.
-   - Always express a clear, strong YES plus the core benefit in one compact statement.
-   - Example:
-     "Yes, for scaled agencies, GoHighLevel can replace separate CRM, funnels, messaging, calendar, and reputation tools with one platform so you reduce SaaS bloat and centralize client campaigns."
+Guidance:
 
-5) mini_answer
-   - 2–5 sentences expanding the capsule in plain, specific language.
-   - Your posture: "Yes is already decided; here’s how and why it works."
-   - Use supporting_url as your grounding reference (conceptually).
-   - Include:
-     - how the platform delivers the promised benefit (features, plans, workflows),
-     - what the buyer gains (control, margin, reliability, speed),
-     - any practical boundary conditions WITHOUT hedging the yes.
-   - YES opening logic:
-     - If question_text starts with "Can", "Will", "Is", "Are", "Does", "Do", "Could", "Should", "Would", or "If we ... will ...":
-       - start mini_answer with "Yes — ...".
-     - If question_text starts with "How", "What", "Which", "When", "Why", or similar:
-       - do NOT force the literal word "Yes"; start with a direct benefit statement that clearly implies a YES.
-     - If unsure, default to starting with "Yes — ...".
-
-6) source_url
-   - Echo supporting_url EXACTLY as given by the input.
-   - This is the evidence anchor for the answer.
-
-7) cta_url
-   - ALSO echo supporting_url EXACTLY as given.
-   - Downstream UIs will use this as the CTA link in the money-box button.
-   - DO NOT rewrite or invent this URL.
-
-8) meta_title
-   - Short natural-language page/tab title capturing the core decision.
-   - Example: "Can GoHighLevel Replace Our Agency Tech Stack?"
-
-9) sge_summary
-   - ~110–200 characters, neutral preview summary for meta and <meta name="sge:summary">.
-   - Summarize the YES answer and key benefit.
-   - No URLs, no CTAs, no brand hype.
-
-10) critical_caveat
-    - ONE specific warning, nuance, or constraint that could affect the decision if ignored.
-    - Example themes: implementation effort, data migration, team training, contract terms.
-    - No URLs, no CTAs, no provider pitches.
-
-11) meta
-    - An object with at least:
-      {
-        "engine_version": "inputcheck-raptor-yes-3.5-lite-2.1",
-        "model": "gpt-4.1-mini"
-      }
+- 6–12 child_entities is usually ideal for a large company.
+- Mark core strategic lines as "core_flagship" and give them higher priority_score (8–10).
+- Mark important but secondary lines as "mid_core".
+- Use "niche" sparingly for edge offerings that still attract meaningful search intent.
+- Always set cpdc_needed = true for entities that clearly deserve their own “What is X?” definition node.
+- Do NOT include resellers, distributors, or generic concepts (e.g. "AI", "cloud") as child entities.
 
 ------------------------
 CONSTRAINTS
 ------------------------
-- Output ONLY the single JSON object, with no extra text, no markdown.
-- Never include marketing fluff or pushy sales language.
-- Never contradict the likely context of supporting_url.
-- Assume a smart, time-constrained, high-intent buyer who wants clear, confident reasoning.
+- Output MUST be valid JSON, no comments, no markdown, no extra text.
+- Do NOT invent products that obviously contradict the likely portfolio of the entity.
+- Assume a smart, time-constrained operator who will use this as input to downstream engines.
+- Be decisive: better to produce a sharp, opinionated entity stack than a vague or bloated one.
 `.trim();
 
-    let completion;
-    try {
-      const openaiRes = await fetch(OPENAI_API_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: "Bearer " + apiKey
-        },
-        body: JSON.stringify({
-          model: OPENAI_MODEL,
-          response_format: { type: "json_object" },
-          temperature: 0.15,
-          top_p: 0.8,
-          max_tokens: 700,
-          messages: [
-            { role: "system", content: systemPrompt },
-            {
-              role: "user",
-              content: JSON.stringify({
-                question_text,
-                supporting_url,
-                original_length: raw_input.length,
-                was_truncated: wasTruncated,
-                raw_input: truncated
-              })
-            }
-          ]
-        })
-      });
-
-      if (!openaiRes.ok) {
-        const text = await openaiRes.text();
-        console.error(
-          `[${reqId}] OpenAI error ${openaiRes.status}:`,
-          text
-        );
-        const fallback = buildFallback(
-          truncated,
-          "OpenAI HTTP " + openaiRes.status,
-          wasTruncated
-        );
-        fallback.meta.request_id = reqId;
-        res.status(200).json(fallback);
-        return;
-      }
-
-      completion = await openaiRes.json();
-    } catch (err) {
-      console.error(`[${reqId}] OpenAI fetch error:`, err);
-      const fallback = buildFallback(
-        truncated,
-        "OpenAI network or fetch error",
-        wasTruncated
-      );
-      fallback.meta.request_id = reqId;
-      res.status(200).json(fallback);
-      return;
-    }
-
-    const content = completion?.choices?.[0]?.message?.content || "{}";
-
-    let payload;
-    try {
-      payload = JSON.parse(content);
-    } catch (err) {
-      console.error(
-        `[${reqId}] JSON parse error from model content:`,
-        err,
-        content
-      );
-      const fallback = buildFallback(
-        truncated,
-        "invalid JSON from model",
-        wasTruncated
-      );
-      fallback.meta.request_id = reqId;
-      res.status(200).json(fallback);
-      return;
-    }
-
-    // ----------------------------
-    // Coerce + backfill fields
-    // ----------------------------
-    const cleaned_question = (
-      payload.cleaned_question || question_text
-    )
-      .toString()
-      .trim();
-
-    const googleRaw = (payload.google_style_query || "")
-      .toString()
-      .trim();
-
-    const google_style_query = normalizeGoogleQuery(
-      cleaned_question,
-      googleRaw
-    );
-
-    const defaultCapsule =
-      "It depends—this decision hinges on your real workload, revenue, and risk tolerance, so compare concrete performance and costs before committing fully to one platform.";
-    const defaultMini =
-      "The YES engine did not return a full mini answer for this question. Re-run with a clearer, more specific decision question and verify details on the official site before acting.";
-
-    const answer_capsule_25w = (
-      payload.answer_capsule_25w || defaultCapsule
-    )
-      .toString()
-      .trim();
-
-    const mini_answer = (payload.mini_answer || defaultMini)
-      .toString()
-      .trim();
-
-    const slugRaw =
-      payload.slug ||
-      payload.url_slug ||
-      google_style_query ||
-      cleaned_question;
-
-    const url_slug = buildSlug(slugRaw);
-
-    const meta_title = (
-      payload.meta_title ||
-      buildMetaTitle(cleaned_question, google_style_query)
-    )
-      .toString()
-      .trim();
-
-    const sge_summary = (
-      payload.sge_summary ||
-      buildSgeSummary(answer_capsule_25w, mini_answer)
-    )
-      .toString()
-      .trim();
-
-    const critical_caveat = (
-      payload.critical_caveat ||
-      "Platform choices still require careful migration planning, team training, and contract review; do not switch tooling without validating fit and implementation effort."
-    )
-      .toString()
-      .trim();
-
-    const source_url = (
-      payload.source_url || supporting_url || ""
-    )
-      .toString()
-      .trim();
-
-    const cta_url = (
-      payload.cta_url || supporting_url || ""
-    )
-      .toString()
-      .trim();
-
-    const processing_time_ms = Date.now() - startTime;
-
-    const responseBody = {
-      raw_input,
-      cleaned_question,
-      google_style_query,
-      answer_capsule_25w,
-      mini_answer,
-      url_slug,
-      meta_title,
-      sge_summary,
-      critical_caveat,
-      source_url,
-      cta_url,
-      meta: {
-        request_id: reqId,
-        engine_version: ENGINE_VERSION,
+  // ----------------------------
+  // Call OpenAI
+  // ----------------------------
+  let completion;
+  try {
+    const openaiRes = await fetch(OPENAI_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + apiKey
+      },
+      body: JSON.stringify({
         model: OPENAI_MODEL,
-        processing_time_ms,
-        input_length_chars: raw_input.length,
-        was_truncated: wasTruncated,
-        backend_error: false,
-        reason: ""
-      }
-    };
+        response_format: { type: "json_object" },
+        temperature: 0.15,
+        top_p: 0.9,
+        max_tokens: 1400,
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: JSON.stringify({
+              entity_name,
+              entity_root_url,
+              entity_type_hint,
+              primary_lane_hint,
+              notes
+            })
+          }
+        ]
+      })
+    });
 
-    res.status(200).json(responseBody);
+    if (!openaiRes.ok) {
+      const text = await openaiRes.text();
+      console.error(`[${reqId}] OpenAI error ${openaiRes.status}:`, text);
+      const fb = buildFallback(
+        entity_name,
+        entity_root_url,
+        "OpenAI HTTP " + openaiRes.status
+      );
+      fb.meta.request_id = reqId;
+      fb.meta.processing_time_ms = Date.now() - startTime;
+      res.status(200).json(fb);
+      return;
+    }
+
+    completion = await openaiRes.json();
   } catch (err) {
-    console.error(`[${reqId}] Unexpected engine error:`, err);
-    const fallback = buildFallback(
-      raw_input,
-      "unexpected server error",
-      false
+    console.error(`[${reqId}] OpenAI fetch error:`, err);
+    const fb = buildFallback(
+      entity_name,
+      entity_root_url,
+      "OpenAI network or fetch error"
     );
-    fallback.meta.request_id = reqId;
-    res.status(200).json(fallback);
+    fb.meta.request_id = reqId;
+    fb.meta.processing_time_ms = Date.now() - startTime;
+    res.status(200).json(fb);
+    return;
   }
+
+  const content = completion?.choices?.[0]?.message?.content || "{}";
+
+  let payload;
+  try {
+    payload = JSON.parse(content);
+  } catch (err) {
+    console.error(
+      `[${reqId}] JSON parse error from model content:`,
+      err,
+      content
+    );
+    const fb = buildFallback(
+      entity_name,
+      entity_root_url,
+      "invalid JSON from model"
+    );
+    fb.meta.request_id = reqId;
+    fb.meta.processing_time_ms = Date.now() - startTime;
+    res.status(200).json(fb);
+    return;
+  }
+
+  // ----------------------------
+  // Coerce + meta attach
+  // ----------------------------
+  if (!payload.engine) {
+    payload.engine = "raptor4_entity_stack_v1";
+  }
+  if (!payload.entity_name) {
+    payload.entity_name = entity_name;
+  }
+  if (!payload.entity_root_url) {
+    payload.entity_root_url = entity_root_url;
+  }
+  if (!Array.isArray(payload.child_entities)) {
+    payload.child_entities = [];
+  }
+
+  const processing_time_ms = Date.now() - startTime;
+
+  payload.meta = {
+    engine_version: ENGINE_VERSION,
+    model: OPENAI_MODEL,
+    backend_error: false,
+    reason: "",
+    request_id: reqId,
+    processing_time_ms
+  };
+
+  res.status(200).json(payload);
 }
