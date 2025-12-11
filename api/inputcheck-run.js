@@ -1,4 +1,4 @@
-// api/raptor4-entity-stack-run.js
+// api/inputcheck-run.js
 // Raptor-4 Entity Stack → CPDC Engine
 // Input: full entity_stack JSON (parent + child_entities)
 // Output: Canonical Product Definition Capsules (CPDC) JSON
@@ -79,6 +79,7 @@ export default async function handler(req, res) {
     console.error(`[${reqId}] Missing OPENAI_API_KEY`);
     const fb = buildFallback("", "", "missing OPENAI_API_KEY on server");
     fb.meta.request_id = reqId;
+    fb.meta.processing_time_ms = Date.now() - startTime;
     res.status(500).json(fb);
     return;
   }
@@ -266,10 +267,10 @@ Rules:
       entity_root_url,
       "invalid_json_from_model"
     );
-      fb.meta.request_id = reqId;
-      fb.meta.processing_time_ms = Date.now() - startTime;
-      res.status(500).json(fb);
-      return;
+    fb.meta.request_id = reqId;
+    fb.meta.processing_time_ms = Date.now() - startTime;
+    res.status(500).json(fb);
+    return;
   }
 
   const processing_time_ms = Date.now() - startTime;
